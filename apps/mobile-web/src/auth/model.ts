@@ -20,15 +20,19 @@ export function hasRole(actual: AppRole | null | undefined, expected: AppRole) {
 }
 
 export function isAdmin(role: AppRole | null | undefined) {
-  return role === "admin";
+  return hasRole(role, "admin");
 }
 
 export function isOperator(role: AppRole | null | undefined) {
-  return role === "operator";
+  return hasRole(role, "operator");
 }
 
 export function isViewer(role: AppRole | null | undefined) {
-  return role === "viewer";
+  return hasRole(role, "viewer");
+}
+
+export function hasActiveProfile(profile: AppUserProfile | null | undefined) {
+  return profile?.status === "active";
 }
 
 export function getAuthRedirect({ hasSession, isLoading, pathname }: AuthRedirectInput) {

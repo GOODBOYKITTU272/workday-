@@ -5,6 +5,7 @@ import { useState } from "react";
 import { ActivityIndicator, Pressable, Text, TextInput, View } from "react-native";
 
 import { useAuth } from "../src/auth/AuthProvider";
+import { getAuthRedirect } from "../src/auth/model";
 
 export default function LoginScreen() {
   const { error, isConfigured, isLoading, session, signIn } = useAuth();
@@ -12,9 +13,10 @@ export default function LoginScreen() {
   const [password, setPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const redirect = getAuthRedirect({ hasSession: Boolean(session), isLoading, pathname: "/login" });
 
-  if (!isLoading && session) {
-    return <Redirect href="/dashboard" />;
+  if (redirect) {
+    return <Redirect href={redirect} />;
   }
 
   async function handleSubmit() {

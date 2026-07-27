@@ -5,6 +5,14 @@ Phase 2 adds the Supabase schema migration for the V1 backend foundation.
 ## Migration Files
 
 - `migrations/20260727180000_phase_2_database_schema.sql`
+- `migrations/20260728000100_fix_anon_function_execute_grants.sql`
+
+Supabase CLI reads migrations from `supabase/migrations/`. This package keeps mirrored copies for database package documentation and review. When adding a migration, add it in both locations and verify the files match:
+
+```bash
+cmp -s packages/database/migrations/<file>.sql supabase/migrations/<file>.sql
+shasum -a 256 packages/database/migrations/<file>.sql supabase/migrations/<file>.sql
+```
 
 ## Storage Buckets
 

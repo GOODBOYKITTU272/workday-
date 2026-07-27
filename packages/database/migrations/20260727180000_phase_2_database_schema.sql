@@ -724,8 +724,36 @@ grant execute on function public.claim_next_application_run() to service_role;
 revoke execute on function public.calculate_run_readiness(uuid) from public, authenticated;
 grant execute on function public.calculate_run_readiness(uuid) to service_role;
 
-revoke select (access_token_encrypted, refresh_token_encrypted) on public.zoho_mailboxes from anon, authenticated;
-revoke select (password_encrypted) on public.workday_accounts from anon, authenticated;
+revoke select on public.zoho_mailboxes from anon, authenticated;
+grant select (
+  id,
+  candidate_id,
+  email,
+  zoho_account_id,
+  token_expires_at,
+  connection_status,
+  last_otp_check_at,
+  last_success_at,
+  last_error,
+  created_at,
+  updated_at
+) on public.zoho_mailboxes to authenticated;
+
+revoke select on public.workday_accounts from anon, authenticated;
+grant select (
+  id,
+  candidate_id,
+  tenant_key,
+  tenant_name,
+  workday_base_url,
+  email,
+  username,
+  account_status,
+  last_login_at,
+  last_error,
+  created_at,
+  updated_at
+) on public.workday_accounts to authenticated;
 
 insert into public.system_settings (setting_key, setting_value, description)
 values

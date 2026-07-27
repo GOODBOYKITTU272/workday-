@@ -8,6 +8,17 @@ const migrationSql = readFileSync(
   "utf8"
 );
 
+function grantedColumnsFor(tableName: string) {
+  const match = migrationSql.match(
+    new RegExp(`grant select \\(([^)]+)\\) on public\\.${tableName} to authenticated;`, "i")
+  );
+
+  return match?.[1]
+    .split(",")
+    .map((column) => column.trim())
+    .filter(Boolean);
+}
+
 describe("Phase 2 migration security gates", () => {
   it("blocks non-admin application run approval state changes", () => {
     expect(migrationSql).toContain("public.prevent_non_admin_run_approval()");
@@ -38,13 +49,43 @@ describe("Phase 2 migration security gates", () => {
     );
   });
 
-  it("does not expose encrypted secret columns to authenticated frontend clients", () => {
+  it("uses allow-listed frontend grants for Zoho mailbox columns", () => {
     expect(migrationSql).toContain(
-      "revoke select (access_token_encrypted, refresh_token_encrypted) on public.zoho_mailboxes from anon, authenticated"
+      "revoke select on public.zoho_mailboxes from anon, authenticated"
     );
-    expect(migrationSql).toContain(
-      "revoke select (password_encrypted) on public.workday_accounts from anon, authenticated"
-    );
+
+    expect(grantedColumnsFor("zoho_mailboxes")).toEqual([
+      "id",
+      "candidate_id",
+      "email",
+      "zoho_account_id",
+      "token_expires_at",
+      "connection_status",
+      "last_otp_check_at",
+      "last_success_at",
+      "last_error",
+      "created_at",
+      "updated_at"
+    ]);
+  });
+
+  it("uses allow-listed frontend grants for Workday account columns", () => {
+    expect(migrationSql).toContain("revoke select on public.workday_accounts from anon, authenticated");
+
+    expect(grantedColumnsFor("workday_accounts")).toEqual([
+      "id",
+      "candidate_id",
+      "tenant_key",
+      "tenant_name",
+      "workday_base_url",
+      "email",
+      "username",
+      "account_status",
+      "last_login_at",
+      "last_error",
+      "created_at",
+      "updated_at"
+    ]);
   });
 
   it("prevents audit actor spoofing and operator global question bank approvals", () => {

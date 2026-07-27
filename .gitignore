@@ -6,4 +6,5 @@
 coverage/
 dist/
 node_modules/
+supabase/.temp/
 web-build/

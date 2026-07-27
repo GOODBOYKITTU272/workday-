@@ -15,6 +15,17 @@ The migration creates these private Supabase Storage buckets:
 - `playwright-traces`
 - `html-captures`
 
+## Security Gates
+
+The Phase 2 migration keeps these gates in the database:
+
+- Non-admin users cannot create final-submit approval state on `application_runs`.
+- Non-admin users cannot update protected `users` fields such as role, status, email, or id.
+- `claim_next_application_run()` and `calculate_run_readiness(uuid)` execute only for `service_role`.
+- Encrypted Zoho token and Workday password columns are revoked from frontend roles.
+- Frontend audit inserts must use the current user's `auth.uid()`.
+- Global `question_bank` approvals are admin-only.
+
 ## Local Apply
 
 Supabase local requires Docker and a configured Supabase project.

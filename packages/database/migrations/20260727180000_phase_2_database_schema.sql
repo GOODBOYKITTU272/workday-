@@ -62,6 +62,94 @@ as $$
   select coalesce(public.current_user_role() in ('admin', 'operator', 'viewer'), false)
 $$;
 
+create or replace function public.prevent_user_privilege_escalation()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if public.is_admin() or coalesce(auth.role(), '') = 'service_role' then
+    return new;
+  end if;
+
+  if old.id is distinct from new.id
+    or old.email is distinct from new.email
+    or old.role is distinct from new.role
+    or old.status is distinct from new.status
+    or old.last_login_at is distinct from new.last_login_at
+    or old.created_at is distinct from new.created_at then
+    raise exception 'only admin can update protected user fields';
+  end if;
+
+  return new;
+end;
+$$;
+
+create or replace function public.prevent_non_admin_run_approval()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if public.is_admin() then
+    return new;
+  end if;
+
+  if tg_op = 'INSERT' then
+    if new.status = 'approved_for_submit'
+      or new.approved_by is not null
+      or new.approved_at is not null then
+      raise exception 'only admin can approve final submit';
+    end if;
+
+    return new;
+  end if;
+
+  if new.status = 'approved_for_submit' and old.status is distinct from new.status then
+    raise exception 'only admin can approve final submit';
+  end if;
+
+  if new.approved_by is distinct from old.approved_by
+    or new.approved_at is distinct from old.approved_at then
+    raise exception 'only admin can change final submit approval fields';
+  end if;
+
+  return new;
+end;
+$$;
+
+create or replace function public.prevent_non_admin_question_bank_approval()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if public.is_admin() then
+    return new;
+  end if;
+
+  if tg_op = 'INSERT' then
+    if new.is_global
+      and (new.approved_by is not null or new.approved_at is not null) then
+      raise exception 'only admin can approve global question bank entries';
+    end if;
+
+    return new;
+  end if;
+
+  if new.is_global
+    and (new.approved_by is distinct from old.approved_by
+      or new.approved_at is distinct from old.approved_at) then
+    raise exception 'only admin can approve global question bank entries';
+  end if;
+
+  return new;
+end;
+$$;
+
 create table public.candidates (
   id uuid primary key default gen_random_uuid(),
   created_by uuid references public.users(id),
@@ -470,14 +558,17 @@ create index audit_logs_application_run_id_idx on public.audit_logs(application_
 create index audit_logs_created_at_idx on public.audit_logs(created_at);
 
 create trigger users_set_updated_at before update on public.users for each row execute function public.set_updated_at();
+create trigger users_prevent_privilege_escalation before update on public.users for each row execute function public.prevent_user_privilege_escalation();
 create trigger candidates_set_updated_at before update on public.candidates for each row execute function public.set_updated_at();
 create trigger candidate_resumes_set_updated_at before update on public.candidate_resumes for each row execute function public.set_updated_at();
 create trigger candidate_answers_set_updated_at before update on public.candidate_answers for each row execute function public.set_updated_at();
 create trigger question_bank_set_updated_at before update on public.question_bank for each row execute function public.set_updated_at();
+create trigger question_bank_prevent_non_admin_approval before insert or update on public.question_bank for each row execute function public.prevent_non_admin_question_bank_approval();
 create trigger zoho_mailboxes_set_updated_at before update on public.zoho_mailboxes for each row execute function public.set_updated_at();
 create trigger workday_accounts_set_updated_at before update on public.workday_accounts for each row execute function public.set_updated_at();
 create trigger job_links_set_updated_at before update on public.job_links for each row execute function public.set_updated_at();
 create trigger application_runs_set_updated_at before update on public.application_runs for each row execute function public.set_updated_at();
+create trigger application_runs_prevent_non_admin_approval before insert or update on public.application_runs for each row execute function public.prevent_non_admin_run_approval();
 create trigger run_steps_set_updated_at before update on public.run_steps for each row execute function public.set_updated_at();
 create trigger screenshots_set_updated_at before update on public.screenshots for each row execute function public.set_updated_at();
 create trigger extracted_questions_set_updated_at before update on public.extracted_questions for each row execute function public.set_updated_at();
@@ -539,7 +630,7 @@ create policy read_automation_logs on public.automation_logs for select using (p
 create policy read_system_settings on public.system_settings for select using (public.is_admin() or (public.can_view() and is_sensitive = false));
 create policy write_system_settings on public.system_settings for all using (public.is_admin()) with check (public.is_admin());
 create policy read_audit_logs on public.audit_logs for select using (public.can_view());
-create policy write_audit_logs on public.audit_logs for insert with check (public.can_operate());
+create policy write_audit_logs on public.audit_logs for insert with check (public.is_admin() or actor_user_id = auth.uid());
 
 create or replace function public.claim_next_application_run()
 returns table (
@@ -627,6 +718,14 @@ begin
   return 'blocked';
 end;
 $$;
+
+revoke execute on function public.claim_next_application_run() from public, authenticated;
+grant execute on function public.claim_next_application_run() to service_role;
+revoke execute on function public.calculate_run_readiness(uuid) from public, authenticated;
+grant execute on function public.calculate_run_readiness(uuid) to service_role;
+
+revoke select (access_token_encrypted, refresh_token_encrypted) on public.zoho_mailboxes from anon, authenticated;
+revoke select (password_encrypted) on public.workday_accounts from anon, authenticated;
 
 insert into public.system_settings (setting_key, setting_value, description)
 values

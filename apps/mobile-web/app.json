@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "ApplyWizz Workday",
+    "slug": "applywizz-workday",
+    "scheme": "applywizz-workday",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "platforms": ["web", "ios", "android"],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

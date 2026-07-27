@@ -1,0 +1,18 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@applywizz/shared": [
+        "../../packages/shared/src/index.ts"
+      ]
+    },
+    "strict": true
+  },
+  "include": [
+    "app",
+    "nativewind-env.d.ts",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts"
+  ]
+}

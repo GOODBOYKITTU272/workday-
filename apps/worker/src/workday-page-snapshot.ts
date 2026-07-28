@@ -1,4 +1,4 @@
-import { detectWorkdayTenantFromUrl, type WorkdayTenantDetectionResult } from "@applywizz/shared";
+import { detectWorkdayTenantFromUrl, isTrustedWorkdayHost, type WorkdayTenantDetectionResult } from "@applywizz/shared";
 
 import { createBrowserContext } from "./browser.js";
 
@@ -21,8 +21,29 @@ export type SafeWorkdayPageSnapshot = {
 };
 
 export type WorkdayPageOpenCheckResult =
+  | {
+      error: string;
+      error_code: "UNTRUSTED_REDIRECT";
+      final_url: string;
+      hostname: string;
+      load_status: "blocked";
+      ok: false;
+      page_kind: "untrusted_redirect";
+      url: string;
+    }
   | { ok: false; error: string; error_code: "invalid_url" | "page_open_failed" | "untrusted_host" | "unsupported_protocol"; url: string }
   | { ok: true; snapshot: SafeWorkdayPageSnapshot; url: string };
+
+type WorkdayPageBlockedRedirectResult = {
+  error: string;
+  error_code: "UNTRUSTED_REDIRECT";
+  final_url: string;
+  hostname: string;
+  load_status: "blocked";
+  ok: false;
+  page_kind: "untrusted_redirect";
+  url: string;
+};
 
 type PageLike = {
   goto: (url: string, options?: { timeout?: number; waitUntil?: "commit" | "domcontentloaded" | "load" | "networkidle" }) => Promise<unknown>;
@@ -61,12 +82,22 @@ export async function openTrustedWorkdayJobPage(
       waitUntil: "domcontentloaded"
     });
 
-    const snapshot = await captureSafePageSnapshot(page, parsed.detection, options?.now?.());
+    const finalValidation = validateTrustedWorkdayFinalUrl(page.url());
+
+    if (!finalValidation.ok) {
+      return finalValidation;
+    }
+
+    const snapshotOrBlocked = await captureSafePageSnapshot(page, finalValidation.detection, options?.now?.());
+
+    if ("ok" in snapshotOrBlocked) {
+      return snapshotOrBlocked;
+    }
 
     return {
       ok: true,
-      snapshot,
-      url: parsed.normalizedUrl
+      snapshot: snapshotOrBlocked,
+      url: snapshotOrBlocked.final_url
     } satisfies WorkdayPageOpenCheckResult;
   } catch {
     return {
@@ -82,21 +113,31 @@ export async function openTrustedWorkdayJobPage(
   }
 }
 
-export async function captureSafePageSnapshot(page: PageLike, detection: WorkdayTenantDetectionResult, timestamp = new Date().toISOString()) {
-  const finalUrl = page.url();
+export async function captureSafePageSnapshot(
+  page: PageLike,
+  detection: WorkdayTenantDetectionResult,
+  timestamp = new Date().toISOString()
+): Promise<SafeWorkdayPageSnapshot | WorkdayPageBlockedRedirectResult> {
+  const finalValidation = validateTrustedWorkdayFinalUrl(page.url());
+
+  if (!finalValidation.ok) {
+    return finalValidation;
+  }
+
+  const finalUrl = finalValidation.normalizedUrl;
   const url = new URL(finalUrl);
   const pageTitle = await page.title();
 
   return buildSafeWorkdayPageMetadata({
-    confidence: detection.confidence,
+    confidence: finalValidation.detection.confidence,
     finalUrl,
     hostname: url.hostname,
     loadStatus: "loaded",
     pageTitle: pageTitle.trim() || null,
-    tenantKey: detection.tenant_key,
-    tenantName: detection.tenant_name,
+    tenantKey: finalValidation.detection.tenant_key,
+    tenantName: finalValidation.detection.tenant_name,
     timestamp,
-    workdayBaseUrl: detection.workday_base_url
+    workdayBaseUrl: finalValidation.detection.workday_base_url
   });
 }
 
@@ -189,6 +230,82 @@ function validateTrustedWorkdayJobUrl(
     normalizedUrl: detection.normalized_url,
     ok: true,
     url: trimmedUrl
+  };
+}
+
+function validateTrustedWorkdayFinalUrl(
+  rawUrl: string
+):
+  | { detection: WorkdayTenantDetectionResult; ok: true; normalizedUrl: string; url: string }
+  | {
+      error: string;
+      error_code: "UNTRUSTED_REDIRECT";
+      final_url: string;
+      hostname: string;
+      load_status: "blocked";
+      ok: false;
+      page_kind: "untrusted_redirect";
+      url: string;
+    } {
+  const trimmedUrl = rawUrl.trim();
+
+  let parsedUrl: URL;
+
+  try {
+    parsedUrl = new URL(trimmedUrl);
+  } catch {
+    return blockedRedirect(trimmedUrl, "Redirected to an invalid URL.");
+  }
+
+  if (parsedUrl.protocol.toLowerCase() !== "https:") {
+    return blockedRedirect(trimmedUrl, "Redirected to a non-HTTPS URL.");
+  }
+
+  if (!isTrustedWorkdayHost(parsedUrl)) {
+    return blockedRedirect(trimmedUrl, "Redirected to an untrusted URL.");
+  }
+
+  const detection = detectWorkdayTenantFromUrl(trimmedUrl);
+
+  if (!detection.is_workday_url || !detection.normalized_url) {
+    return blockedRedirect(trimmedUrl, detection.error ?? "Redirected to an untrusted URL.");
+  }
+
+  return {
+    detection,
+    normalizedUrl: detection.normalized_url,
+    ok: true,
+    url: trimmedUrl
+  };
+}
+
+function blockedRedirect(finalUrl: string, error: string): {
+  error: string;
+  error_code: "UNTRUSTED_REDIRECT";
+  final_url: string;
+  hostname: string;
+  load_status: "blocked";
+  ok: false;
+  page_kind: "untrusted_redirect";
+  url: string;
+} {
+  let hostname = "";
+
+  try {
+    hostname = new URL(finalUrl).hostname.toLowerCase();
+  } catch {
+    hostname = "";
+  }
+
+  return {
+    error,
+    error_code: "UNTRUSTED_REDIRECT",
+    final_url: finalUrl,
+    hostname,
+    load_status: "blocked",
+    ok: false,
+    page_kind: "untrusted_redirect",
+    url: finalUrl
   };
 }
 

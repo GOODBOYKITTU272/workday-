@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import { Link } from "expo-router";
+import type { Href } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text, TextInput, View } from "react-native";
 
@@ -257,8 +259,12 @@ export default function CandidatesScreen() {
               <View className="rounded-lg border border-border bg-card p-5" key={candidate.id}>
                 <View className="gap-3 md:flex-row md:items-center md:justify-between">
                   <View className="min-w-0 flex-1">
-                    <Text className="text-lg font-semibold text-zinc-100">{candidate.full_name}</Text>
-                    <Text className="mt-1 text-sm text-zinc-400">{candidate.email}</Text>
+                    <Link href={`/candidates/${candidate.id}` as Href} asChild>
+                      <Pressable>
+                        <Text className="text-lg font-semibold text-zinc-100">{candidate.full_name}</Text>
+                        <Text className="mt-1 text-sm text-zinc-400">{candidate.email}</Text>
+                      </Pressable>
+                    </Link>
                     <Text className="mt-2 text-sm text-zinc-300">
                       {[candidate.target_role, candidate.location, candidate.phone].filter(Boolean).join(" · ") || "No profile details yet"}
                     </Text>

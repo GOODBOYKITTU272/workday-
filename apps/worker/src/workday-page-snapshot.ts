@@ -4,14 +4,28 @@ import { createBrowserContext } from "./browser.js";
 
 type BrowserLauncher = Parameters<typeof createBrowserContext>[0];
 
-export type WorkdayPageKind = "error_page" | "job_page" | "sign_in_page" | "unknown";
+export type WorkdayPageKind =
+  | "already_signed_in_page"
+  | "create_account_page"
+  | "error_page"
+  | "job_page"
+  | "sign_in_page"
+  | "unavailable_page"
+  | "unknown";
 export type WorkdayPageLoadStatus = "error" | "loaded";
+export type WorkdayLandingPageConfidence = "high" | "low" | "medium";
+
+export type WorkdayLandingPageClassification = {
+  confidence: WorkdayLandingPageConfidence;
+  page_kind: WorkdayPageKind;
+};
 
 export type SafeWorkdayPageSnapshot = {
   confidence: WorkdayTenantDetectionResult["confidence"];
   final_url: string;
   hostname: string;
   load_status: WorkdayPageLoadStatus;
+  page_kind_confidence: WorkdayLandingPageConfidence;
   page_kind: WorkdayPageKind;
   page_title: string | null;
   tenant_key: string | null;
@@ -152,12 +166,15 @@ export function buildSafeWorkdayPageMetadata(input: {
   timestamp: string;
   workdayBaseUrl: string | null;
 }): SafeWorkdayPageSnapshot {
+  const classification = classifyWorkdayLandingPage(input.finalUrl, input.pageTitle);
+
   return {
     confidence: input.confidence,
     final_url: input.finalUrl,
     hostname: input.hostname,
     load_status: input.loadStatus,
-    page_kind: inferWorkdayPageKind(input.finalUrl, input.pageTitle),
+    page_kind: classification.page_kind,
+    page_kind_confidence: classification.confidence,
     page_title: input.pageTitle,
     tenant_key: input.tenantKey,
     tenant_name: input.tenantName,
@@ -172,6 +189,7 @@ export function redactPageSnapshotForLogs(snapshot: Record<string, unknown>) {
     final_url: snapshot.final_url as string | undefined,
     hostname: snapshot.hostname as string | undefined,
     load_status: snapshot.load_status as WorkdayPageLoadStatus | undefined,
+    page_kind_confidence: snapshot.page_kind_confidence as WorkdayLandingPageConfidence | undefined,
     page_kind: snapshot.page_kind as WorkdayPageKind | undefined,
     page_title: snapshot.page_title as string | null | undefined,
     tenant_key: snapshot.tenant_key as string | null | undefined,
@@ -183,6 +201,69 @@ export function redactPageSnapshotForLogs(snapshot: Record<string, unknown>) {
 
 export async function runWorkdayPageOpenCheck(rawUrl: string, options?: { launcher?: BrowserLauncher }) {
   return openTrustedWorkdayJobPage(rawUrl, options);
+}
+
+export function classifyWorkdayLandingPage(finalUrl: string, pageTitle: string | null): WorkdayLandingPageClassification {
+  let parsedUrl: URL;
+
+  try {
+    parsedUrl = new URL(finalUrl.trim());
+  } catch {
+    return {
+      confidence: "low",
+      page_kind: "unknown"
+    };
+  }
+
+  const pathAndTitle = `${parsedUrl.pathname} ${pageTitle ?? ""}`.toLowerCase();
+  const titleOnly = (pageTitle ?? "").toLowerCase();
+
+  if (isUnavailableWorkdayPage(pathAndTitle)) {
+    return {
+      confidence: "high",
+      page_kind: "unavailable_page"
+    };
+  }
+
+  if (isErrorWorkdayPage(pathAndTitle)) {
+    return {
+      confidence: "high",
+      page_kind: "error_page"
+    };
+  }
+
+  if (/create[\s-]?account|sign[\s-]?up|register|new[\s-]?account/.test(pathAndTitle)) {
+    return {
+      confidence: "high",
+      page_kind: "create_account_page"
+    };
+  }
+
+  if (/sign[\s-]?in|sign[\s-]?on|log[\s-]?in|login|authenticate|single[\s-]?sign[\s-]?on|sso/.test(pathAndTitle)) {
+    return {
+      confidence: "high",
+      page_kind: "sign_in_page"
+    };
+  }
+
+  if (/already[\s-]?signed[\s-]?in|my[\s-]?applications|application[\s-]?status|candidate[\s-]?home|workday[\s-]?home|dashboard/.test(pathAndTitle)) {
+    return {
+      confidence: titleOnly ? "medium" : "low",
+      page_kind: "already_signed_in_page"
+    };
+  }
+
+  if (isJobPage(pathAndTitle)) {
+    return {
+      confidence: isStrongJobPageSignal(parsedUrl.pathname, titleOnly) ? "high" : "medium",
+      page_kind: "job_page"
+    };
+  }
+
+  return {
+    confidence: "low",
+    page_kind: "unknown"
+  };
 }
 
 function validateTrustedWorkdayJobUrl(
@@ -309,20 +390,18 @@ function blockedRedirect(finalUrl: string, error: string): {
   };
 }
 
-function inferWorkdayPageKind(finalUrl: string, pageTitle: string | null): WorkdayPageKind {
-  const haystack = `${finalUrl} ${pageTitle ?? ""}`.toLowerCase();
+function isErrorWorkdayPage(haystack: string) {
+  return /error|forbidden|access denied|service unavailable|temporarily unavailable|not found|something went wrong/.test(haystack);
+}
 
-  if (/sign[\s-]?in|sign[\s-]?on|log[\s-]?in|login/.test(haystack)) {
-    return "sign_in_page";
-  }
+function isJobPage(haystack: string) {
+  return /\/job\b|\/jobs\/job\b|\/external\/job\b|\/jobreq\b|career|position|opening|requisition/.test(haystack);
+}
 
-  if (/error|unavailable|forbidden|access denied/.test(haystack)) {
-    return "error_page";
-  }
+function isStrongJobPageSignal(pathname: string, title: string) {
+  return /\/job\b|\/jobs\/job\b|\/external\/job\b|\/jobreq\b/.test(pathname) || /career|position|opening|job/.test(title);
+}
 
-  if (/\/job\b|\/jobs\/job\b|\/external\/job\b|career|position|opening/.test(haystack)) {
-    return "job_page";
-  }
-
-  return "unknown";
+function isUnavailableWorkdayPage(haystack: string) {
+  return /unavailable|no longer available|job no longer available|requisition filled|position filled|posting expired|closed/.test(haystack);
 }

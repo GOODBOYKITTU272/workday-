@@ -23,6 +23,7 @@ const trustedSnapshot = {
   hostname: "acme.wd5.myworkdayjobs.com",
   load_status: "loaded" as const,
   page_kind: "job_page" as const,
+  page_kind_confidence: "high" as const,
   page_title: "Engineer",
   tenant_key: "acme",
   tenant_name: "acme",
@@ -144,6 +145,7 @@ describe("application run processor", () => {
         metadata: expect.objectContaining({
           expected_tenant_known: true,
           final_tenant_key: "acme",
+          page_kind_confidence: "high",
           tenant_key: "acme",
           tenant_match: true
         }),
@@ -194,6 +196,7 @@ describe("application run processor", () => {
         metadata: expect.objectContaining({
           expected_tenant_known: true,
           final_tenant_key: "beta",
+          page_kind_confidence: "high",
           tenant_match: false
         }),
         step_name: "workday_page_snapshot",
@@ -241,6 +244,7 @@ describe("application run processor", () => {
         metadata: expect.objectContaining({
           expected_tenant_known: false,
           final_tenant_key: "acme",
+          page_kind_confidence: "high",
           tenant_match: null
         })
       })
@@ -277,6 +281,7 @@ describe("application run processor", () => {
         metadata: expect.objectContaining({
           expected_tenant_known: true,
           final_tenant_key: null,
+          page_kind_confidence: "high",
           tenant_match: null
         })
       })

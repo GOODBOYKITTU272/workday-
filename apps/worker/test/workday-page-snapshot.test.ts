@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { captureSafePageSnapshot, redactPageSnapshotForLogs, runWorkdayPageOpenCheck } from "../src/workday-page-snapshot";
+import {
+  captureSafePageSnapshot,
+  classifyWorkdayLandingPage,
+  redactPageSnapshotForLogs,
+  runWorkdayPageOpenCheck
+} from "../src/workday-page-snapshot";
 
 describe("workday page snapshot foundation", () => {
   it("opens a trusted Workday job URL and returns safe metadata", async () => {
@@ -41,6 +46,7 @@ describe("workday page snapshot foundation", () => {
         final_url: "https://acme.wd5.myworkdayjobs.com/External/job/Engineer",
         hostname: "acme.wd5.myworkdayjobs.com",
         load_status: "loaded",
+        page_kind_confidence: "high",
         page_kind: "job_page",
         page_title: "Engineer",
         tenant_key: "acme",
@@ -220,6 +226,7 @@ describe("workday page snapshot foundation", () => {
         final_url: "https://acme.wd5.myworkdayjobs.com/External/job/Engineer",
         hostname: "acme.wd5.myworkdayjobs.com",
         load_status: "loaded",
+        page_kind_confidence: "high",
         localStorage: { token: "secret" },
         page_kind: "job_page",
         page_title: "Engineer",
@@ -236,12 +243,27 @@ describe("workday page snapshot foundation", () => {
       final_url: "https://acme.wd5.myworkdayjobs.com/External/job/Engineer",
       hostname: "acme.wd5.myworkdayjobs.com",
       load_status: "loaded",
+      page_kind_confidence: "high",
       page_kind: "job_page",
       page_title: "Engineer",
       tenant_key: "acme",
       tenant_name: "acme",
       timestamp: "2026-07-28T00:00:00.000Z",
       workday_base_url: "https://acme.wd5.myworkdayjobs.com"
+    });
+  });
+
+  it.each([
+    ["sign_in_page", "https://acme.wd5.myworkdayjobs.com/login", "Workday Sign In", "high"],
+    ["create_account_page", "https://acme.wd5.myworkdayjobs.com/create-account", "Create Account", "high"],
+    ["already_signed_in_page", "https://acme.wd5.myworkdayjobs.com/home", "Workday Home", "medium"],
+    ["error_page", "https://acme.wd5.myworkdayjobs.com/error", "Error", "high"],
+    ["unavailable_page", "https://acme.wd5.myworkdayjobs.com/unavailable", "Job Unavailable", "high"],
+    ["unknown", "https://acme.wd5.myworkdayjobs.com/landing", "Welcome", "low"]
+  ])("classifies %s safely", (expectedKind, url, title, expectedConfidence) => {
+    expect(classifyWorkdayLandingPage(url, title)).toEqual({
+      confidence: expectedConfidence,
+      page_kind: expectedKind
     });
   });
 });

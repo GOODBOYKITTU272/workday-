@@ -94,10 +94,7 @@ export async function processOneApplicationRun(deps: RunProcessorDeps = createSu
     if (!pageOpenResult.ok) {
       await finishBlockedPageOpen(deps, claimedRun, pageOpenResult);
 
-      return {
-        runId: claimedRun.id,
-        status: pageOpenResult.error_code === "page_open_failed" ? "snapshot_blocked" : "snapshot_blocked"
-      } satisfies RunProcessorResult;
+      return { runId: claimedRun.id, status: "snapshot_blocked" } satisfies RunProcessorResult;
     }
 
     const expectedTenantKey = readinessInput.jobLink.workday_tenant_key?.trim() || null;
@@ -400,6 +397,7 @@ function buildSafePageSnapshotMetadata(
     hostname: snapshot.hostname,
     load_status: snapshot.load_status,
     page_kind: snapshot.page_kind,
+    page_kind_confidence: snapshot.page_kind_confidence,
     page_title: snapshot.page_title,
     tenant_key: snapshot.tenant_key,
     tenant_match: expectedTenantKey && finalTenantKey ? expectedTenantKey === finalTenantKey : null,

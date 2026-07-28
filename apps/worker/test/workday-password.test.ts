@@ -3,17 +3,18 @@ import { describe, expect, it } from "vitest";
 import { buildEncryptedWorkdayPasswordUpdate, decryptWorkdayPassword, encryptWorkdayPassword } from "../src/workday-password";
 
 const encryptionKey = "0123456789abcdef0123456789abcdef";
+const testPassword = "TestPassword123!";
 
 describe("Workday password helpers", () => {
   it("encrypts and decrypts Workday account passwords", () => {
-    const encrypted = encryptWorkdayPassword("Applying@2026", encryptionKey);
+    const encrypted = encryptWorkdayPassword(testPassword, encryptionKey);
 
-    expect(encrypted).not.toContain("Applying@2026");
-    expect(decryptWorkdayPassword(encrypted, encryptionKey)).toBe("Applying@2026");
+    expect(encrypted).not.toContain(testPassword);
+    expect(decryptWorkdayPassword(encrypted, encryptionKey)).toBe(testPassword);
   });
 
   it("rejects tampered ciphertext and wrong keys", () => {
-    const encrypted = encryptWorkdayPassword("Applying@2026", encryptionKey);
+    const encrypted = encryptWorkdayPassword(testPassword, encryptionKey);
     const parts = encrypted.split(":");
     const ciphertext = parts[3] ?? "";
     parts[3] = `${ciphertext.slice(0, -2)}AA`;
@@ -24,9 +25,9 @@ describe("Workday password helpers", () => {
   });
 
   it("builds a password update payload without plaintext password", () => {
-    const payload = buildEncryptedWorkdayPasswordUpdate("Applying@2026", encryptionKey);
+    const payload = buildEncryptedWorkdayPasswordUpdate(testPassword, encryptionKey);
 
     expect(Object.keys(payload)).toEqual(["password_encrypted"]);
-    expect(JSON.stringify(payload)).not.toContain("Applying@2026");
+    expect(JSON.stringify(payload)).not.toContain(testPassword);
   });
 });

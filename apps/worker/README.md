@@ -36,4 +36,4 @@ ZohoMail.messages.READ
 ZohoMail.accounts.READ
 ```
 
-Phase 14 adds worker-only encrypted Workday account password helpers. The recommended V1 standard password value is `Applying@2026`; keep it in worker/runtime configuration or operator runbooks, never in frontend code.
+Phase 14 adds worker-only encrypted Workday account password helpers. Configure `WORKDAY_STANDARD_PASSWORD` in the worker/server environment, do not commit the real value, and use a strong password that satisfies current Workday tenant policies. The previously committed example value must be treated as burned and not used for real accounts.

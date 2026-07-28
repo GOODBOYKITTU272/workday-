@@ -11,6 +11,10 @@ const phaseSevenMigrationSql = readFileSync(
   fileURLToPath(new URL("../migrations/20260728000300_allow_viewers_read_safe_zoho_metadata.sql", import.meta.url)),
   "utf8"
 );
+const phaseFourteenFollowupMigrationSql = readFileSync(
+  fileURLToPath(new URL("../migrations/20260728000400_allow_viewers_read_safe_workday_metadata.sql", import.meta.url)),
+  "utf8"
+);
 
 function grantedColumnsFor(tableName: string) {
   const match = migrationSql.match(
@@ -105,5 +109,12 @@ describe("Phase 2 migration security gates", () => {
     expect(phaseSevenMigrationSql).not.toContain("write_zoho_mailboxes");
     expect(phaseSevenMigrationSql).not.toContain("access_token_encrypted");
     expect(phaseSevenMigrationSql).not.toContain("refresh_token_encrypted");
+  });
+
+  it("allows viewers to read only safe Workday account metadata through RLS", () => {
+    expect(phaseFourteenFollowupMigrationSql).toContain("drop policy if exists read_workday_accounts on public.workday_accounts");
+    expect(phaseFourteenFollowupMigrationSql).toMatch(/create policy read_workday_accounts\s+on public\.workday_accounts\s+for select\s+using \(public\.can_view\(\)\)/);
+    expect(phaseFourteenFollowupMigrationSql).not.toContain("write_workday_accounts");
+    expect(phaseFourteenFollowupMigrationSql).not.toContain("password_encrypted");
   });
 });

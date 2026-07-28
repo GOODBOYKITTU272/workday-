@@ -31,11 +31,43 @@ export type RunProcessorResult =
 export type RunProcessorDeps = {
   claimNextRun: () => Promise<ClaimedApplicationRun | null>;
   insertAutomationLog: (payload: AutomationLogInsert) => Promise<void>;
+  insertManualReviewItem: (payload: ManualReviewItemInsert) => Promise<{ created: boolean }>;
   insertRunStep: (payload: RunStepInsert) => Promise<{ id: null | string }>;
   loadReadiness: (run: ClaimedApplicationRun) => Promise<WorkerRunReadinessInput>;
   openWorkdayPage: (jobUrl: string, expectedTenantKey: string | null) => Promise<WorkdayPageOpenCheckResult>;
   now?: () => string;
   updateRun: (runId: string, payload: ApplicationRunUpdate) => Promise<void>;
+};
+
+export type ManualReviewCategory =
+  | "apply_click_blocked"
+  | "page_open_blocked"
+  | "readiness_blocked"
+  | "route_to_create_account_flow"
+  | "route_to_login_flow"
+  | "route_to_manual_review"
+  | "route_to_questionnaire_discovery"
+  | "stop_already_applied"
+  | "stop_job_unavailable"
+  | "stop_tenant_mismatch"
+  | "stop_untrusted_redirect"
+  | "unknown_manual_review";
+
+export type ManualReviewRiskLevel = "high" | "low" | "medium" | "unknown";
+
+export type ManualReviewItemInsert = {
+  application_run_id: string;
+  candidate_id: string;
+  error_code: null | string;
+  hostname: null | string;
+  item_type: "routing_review";
+  job_link_id: string;
+  post_apply_state: null | string;
+  review_reason: ManualReviewCategory;
+  risk_level: ManualReviewRiskLevel;
+  route_reason: null | string;
+  status: "open";
+  tenant_key: null | string;
 };
 
 export type ApplicationRunUpdate = {
@@ -72,6 +104,55 @@ const READINESS_STEP_NAME = "readiness_checked";
 const WORKDAY_PAGE_SNAPSHOT_STEP_NAME = "workday_page_snapshot";
 const WORKDAY_APPLY_CLICK_STEP_NAME = "workday_apply_click";
 const UNKNOWN_WORKER_ERROR = "UNKNOWN_WORKER_ERROR";
+const MANUAL_REVIEW_ITEM_CREATE_FAILED = "MANUAL_REVIEW_ITEM_CREATE_FAILED";
+
+export function buildManualReviewItemPayload(input: {
+  category: ManualReviewCategory;
+  errorCode?: null | string;
+  hostname?: null | string;
+  postApplyState?: null | string;
+  riskLevel: ManualReviewRiskLevel;
+  routeReason?: null | string;
+  run: ClaimedApplicationRun;
+  tenantKey?: null | string;
+}): ManualReviewItemInsert {
+  return {
+    application_run_id: input.run.id,
+    candidate_id: input.run.candidate_id,
+    error_code: input.errorCode ?? null,
+    hostname: input.hostname ?? null,
+    item_type: "routing_review",
+    job_link_id: input.run.job_link_id,
+    post_apply_state: input.postApplyState ?? null,
+    review_reason: input.category,
+    risk_level: input.riskLevel,
+    route_reason: input.routeReason ?? null,
+    status: "open",
+    tenant_key: input.tenantKey ?? null
+  };
+}
+
+export async function createManualReviewItemForRun(
+  deps: RunProcessorDeps,
+  run: ClaimedApplicationRun,
+  payload: ManualReviewItemInsert
+): Promise<void> {
+  try {
+    await deps.insertManualReviewItem(payload);
+  } catch {
+    try {
+      await deps.insertAutomationLog({
+        application_run_id: run.id,
+        context: { review_reason: payload.review_reason, safe_error: true },
+        error_code: MANUAL_REVIEW_ITEM_CREATE_FAILED,
+        level: "error",
+        message: "Manual review item could not be created safely."
+      });
+    } catch {
+      // Manual review queue promotion is best-effort; the run's diagnosis was already recorded safely.
+    }
+  }
+}
 
 export async function processOneApplicationRun(deps: RunProcessorDeps = createSupabaseRunProcessorDeps()) {
   let claimedRun: ClaimedApplicationRun | null = null;
@@ -177,6 +258,19 @@ function createSupabaseRunProcessorDeps(): RunProcessorDeps {
         throw error;
       }
     },
+    async insertManualReviewItem(payload) {
+      const { error } = await client.from("manual_review_items").insert(payload);
+
+      if (error) {
+        if (error.code === "23505") {
+          return { created: false };
+        }
+
+        throw error;
+      }
+
+      return { created: true };
+    },
     async insertRunStep(payload) {
       const { data, error } = await client.from("run_steps").insert(payload).select("id").single();
 
@@ -267,6 +361,12 @@ async function finishReadinessFailure(deps: RunProcessorDeps, run: ClaimedApplic
     readiness_score: "blocked",
     status: "manual_review_required"
   });
+
+  await createManualReviewItemForRun(
+    deps,
+    run,
+    buildManualReviewItemPayload({ category: "readiness_blocked", riskLevel: "high", run })
+  );
 }
 
 async function finishSnapshotSuccess(
@@ -277,8 +377,12 @@ async function finishSnapshotSuccess(
   expectedTenantKey: string | null,
   finalTenantKey: string | null
 ) {
+  const postApplyState = classifyPostApplyLandingState(snapshot, discovery);
+  const postApplyDecision = buildPostApplyDecisionRoute(postApplyState);
   const metadata = {
     ...buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
+    post_apply_decision: buildSafePostApplyDecisionMetadata(postApplyDecision),
+    post_apply_state: buildSafePostApplyStateMetadata(postApplyState),
     landing_action: discovery
   };
   const completedAt = getNow(deps);
@@ -308,6 +412,20 @@ async function finishSnapshotSuccess(
     readiness_score: "needs_review",
     status: "manual_review_required"
   });
+
+  await createManualReviewItemForRun(
+    deps,
+    run,
+    buildManualReviewItemPayload({
+      category: postApplyDecision.recommended_next_route,
+      hostname: snapshot.hostname,
+      postApplyState: postApplyState.post_apply_state,
+      riskLevel: postApplyDecision.route_confidence,
+      routeReason: postApplyDecision.route_reason,
+      run,
+      tenantKey: finalTenantKey
+    })
+  );
 }
 
 async function finishApplyClickSuccess(
@@ -355,6 +473,20 @@ async function finishApplyClickSuccess(
     readiness_score: "needs_review",
     status: "manual_review_required"
   });
+
+  await createManualReviewItemForRun(
+    deps,
+    run,
+    buildManualReviewItemPayload({
+      category: postApplyDecision.recommended_next_route,
+      hostname: applyClick.after_hostname,
+      postApplyState: postApplyState.post_apply_state,
+      riskLevel: postApplyDecision.route_confidence,
+      routeReason: postApplyDecision.route_reason,
+      run,
+      tenantKey: finalTenantKey
+    })
+  );
 }
 
 async function finishApplyClickBlocked(
@@ -405,6 +537,24 @@ async function finishApplyClickBlocked(
     readiness_score: "blocked",
     status: "manual_review_required"
   });
+
+  const clickNeverCompleted =
+    applyClick.error_code !== "TENANT_MISMATCH_AFTER_APPLY" && applyClick.error_code !== "UNTRUSTED_REDIRECT_AFTER_APPLY";
+
+  await createManualReviewItemForRun(
+    deps,
+    run,
+    buildManualReviewItemPayload({
+      category: clickNeverCompleted ? "apply_click_blocked" : postApplyDecision.recommended_next_route,
+      errorCode: applyClick.error_code,
+      hostname: applyClick.after_hostname,
+      postApplyState: postApplyState.post_apply_state,
+      riskLevel: clickNeverCompleted ? "high" : postApplyDecision.route_confidence,
+      routeReason: postApplyDecision.route_reason,
+      run,
+      tenantKey: finalTenantKey
+    })
+  );
 }
 
 async function finishTenantMismatch(
@@ -446,6 +596,20 @@ async function finishTenantMismatch(
     readiness_score: "blocked",
     status: "manual_review_required"
   });
+
+  await createManualReviewItemForRun(
+    deps,
+    run,
+    buildManualReviewItemPayload({
+      category: "stop_tenant_mismatch",
+      errorCode: "TENANT_MISMATCH",
+      hostname: snapshot.hostname,
+      postApplyState: "tenant_mismatch",
+      riskLevel: "high",
+      run,
+      tenantKey: finalTenantKey
+    })
+  );
 }
 
 async function finishBlockedPageOpen(
@@ -486,6 +650,20 @@ async function finishBlockedPageOpen(
     readiness_score: status === "failed" ? "failed" : "blocked",
     status
   });
+
+  if (status === "manual_review_required") {
+    await createManualReviewItemForRun(
+      deps,
+      run,
+      buildManualReviewItemPayload({
+        category: result.error_code === "UNTRUSTED_REDIRECT" ? "stop_untrusted_redirect" : "page_open_blocked",
+        errorCode: result.error_code,
+        hostname: "hostname" in result ? result.hostname : null,
+        riskLevel: "high",
+        run
+      })
+    );
+  }
 }
 
 async function finishUnknownError(deps: RunProcessorDeps, run: ClaimedApplicationRun) {

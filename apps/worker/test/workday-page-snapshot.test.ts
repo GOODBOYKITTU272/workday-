@@ -702,6 +702,33 @@ describe("workday page snapshot foundation", () => {
         post_apply_state: "job_unavailable" as const
       },
       "stop_job_unavailable"
+    ],
+    [
+      "tenant_mismatch",
+      {
+        confidence: "high" as const,
+        post_apply_reason: "tenant_mismatch_after_apply" as const,
+        post_apply_state: "tenant_mismatch" as const
+      },
+      "stop_tenant_mismatch"
+    ],
+    [
+      "untrusted_redirect",
+      {
+        confidence: "high" as const,
+        post_apply_reason: "untrusted_redirect_after_apply" as const,
+        post_apply_state: "untrusted_redirect" as const
+      },
+      "stop_untrusted_redirect"
+    ],
+    [
+      "already_applied",
+      {
+        confidence: "high" as const,
+        post_apply_reason: "already_applied_signal" as const,
+        post_apply_state: "already_applied" as const
+      },
+      "stop_already_applied"
     ]
   ])("routes %s deterministically", (_label, classification, recommendedRoute) => {
     expect(buildPostApplyDecisionRoute(classification)).toEqual(

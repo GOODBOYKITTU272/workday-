@@ -9,6 +9,7 @@
     "lint": "eslint . --max-warnings=0",
     "smoke:browser": "tsx src/browser-smoke.ts",
     "smoke:workday-page": "tsx src/workday-page-smoke.ts",
+    "sync:applywizz-leads": "tsx src/sync-applywizz-leads.ts",
     "start": "node dist/index.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

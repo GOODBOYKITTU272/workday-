@@ -52,6 +52,8 @@ Worker:
 - `ZOHO_CLIENT_ID`
 - `ZOHO_CLIENT_SECRET`
 - `ZOHO_REDIRECT_URI`
+- `APPLYWIZZ_LEADS_API_URL`
+- `APPLYWIZZ_LEADS_BASIC_AUTH`
 
 Mobile web:
 
@@ -60,6 +62,13 @@ Mobile web:
 - `EXPO_PUBLIC_APP_ENV`
 
 The privileged Supabase key and encrypted Workday credential fields belong only on the worker/server side. They must not be exposed to the mobile web app.
+The ApplyWizz Leads API values are worker-only secrets. Never put them in `EXPO_PUBLIC` variables, frontend code, or browser-visible Vercel public environment variables.
+
+Manual candidate sync:
+
+```bash
+corepack pnpm --filter @applywizz/worker sync:applywizz-leads
+```
 
 ## Supabase Migrations
 
@@ -74,6 +83,7 @@ Apply migrations in filename order:
 7. `20260728000600_add_post_login_manual_review_routing.sql`
 8. `20260728000700_add_questionnaire_discovery_manual_review_metadata.sql`
 9. `20260728000800_add_questionnaire_safe_snapshot_manual_review_metadata.sql`
+10. `20260728000900_add_applywizz_leads_candidate_sync_fields.sql`
 
 The `supabase/migrations` and `packages/database/migrations` copies must stay mirrored.
 
@@ -96,8 +106,9 @@ The `supabase/migrations` and `packages/database/migrations` copies must stay mi
 6. Run `corepack pnpm test`.
 7. Run `corepack pnpm lint`.
 8. Run the final safety scans from the Phase 32 report.
-9. Use a non-production candidate and Workday account for internal dry-run testing.
-10. Confirm resulting runs stop at `manual_review_required`.
+9. Run `corepack pnpm --filter @applywizz/worker sync:applywizz-leads` when importing ApplyWizz Leads candidates.
+10. Use a non-production candidate and Workday account for internal dry-run testing.
+11. Confirm resulting runs stop at `manual_review_required`.
 
 ## Rollback
 

@@ -37,3 +37,17 @@ ZohoMail.accounts.READ
 ```
 
 Phase 14 adds worker-only encrypted Workday account password helpers. Configure `WORKDAY_STANDARD_PASSWORD` in the worker/server environment, do not commit the real value, and use a strong password that satisfies current Workday tenant policies. The previously committed example value must be treated as burned and not used for real accounts.
+
+Phase 17 adds an explicit Playwright browser smoke test only. It opens a local `data:` page, not Workday or any external job link.
+
+Install Chromium locally when running the optional smoke test:
+
+```bash
+corepack pnpm --filter @applywizz/worker exec playwright install chromium
+```
+
+Run the optional smoke test:
+
+```bash
+corepack pnpm --filter @applywizz/worker smoke:browser
+```

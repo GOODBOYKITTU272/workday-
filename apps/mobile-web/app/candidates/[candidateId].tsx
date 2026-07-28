@@ -16,6 +16,8 @@ import {
   RESUME_BUCKET,
   validateResumeFile
 } from "../../src/resumes/model";
+import type { ApplicationRunRecord, RunCreationValidationErrors } from "../../src/runs/model";
+import { buildRunReadiness, canCreateApplicationRuns, toApplicationRunPayload, validateRunCreation } from "../../src/runs/model";
 import { supabase } from "../../src/auth/supabase";
 import type { ZohoConnectionStatus, ZohoMailboxInput, ZohoMailboxRecord, ZohoMailboxValidationErrors } from "../../src/zoho/model";
 import { canManageZohoMailbox, isMailboxEmailMismatch, toZohoMailboxPayload, validateZohoMailboxInput } from "../../src/zoho/model";
@@ -28,12 +30,15 @@ const zohoColumns =
   "id,candidate_id,email,zoho_account_id,token_expires_at,connection_status,last_otp_check_at,last_success_at,last_error,created_at,updated_at";
 const jobLinkColumns =
   "id,candidate_id,created_by,url,normalized_url,company_name,job_title,workday_tenant_key,source,status,last_run_id,last_error,priority,notes,created_at,updated_at";
+const applicationRunColumns =
+  "id,job_link_id,candidate_id,started_by,status,mode,current_step,readiness_score,total_questions_found,total_answers_mapped,total_answers_filled,total_manual_review_items,total_high_risk_items,error_code,error_message,started_at,completed_at,approved_by,approved_at,submitted_at,created_at,updated_at";
 const zohoStatuses: ZohoConnectionStatus[] = ["not_connected", "connected", "expired", "failed", "revoked"];
 const jobLinkStatuses: JobLinkStatus[] = ["queued", "opened", "login_required", "manual_review_required", "dry_run_complete", "failed", "duplicate", "skipped"];
 
 export default function CandidateDetailScreen() {
   const { candidateId } = useLocalSearchParams<{ candidateId: string }>();
   const { profile, role } = useAuth();
+  const canCreateRuns = canCreateApplicationRuns(role);
   const canEdit = canManageResumes(role);
   const canEditJobLinks = canManageJobLinks(role);
   const canEditZoho = canManageZohoMailbox(role);
@@ -48,7 +53,13 @@ export default function CandidateDetailScreen() {
   const [jobLinkFormErrors, setJobLinkFormErrors] = useState<JobLinkValidationErrors>({});
   const [jobLinkSuccess, setJobLinkSuccess] = useState<string | null>(null);
   const [jobLinks, setJobLinks] = useState<JobLinkRecord[]>([]);
+  const [applicationRuns, setApplicationRuns] = useState<ApplicationRunRecord[]>([]);
+  const [isCreatingRun, setIsCreatingRun] = useState(false);
   const [resumes, setResumes] = useState<CandidateResumeRecord[]>([]);
+  const [runError, setRunError] = useState<string | null>(null);
+  const [runFormErrors, setRunFormErrors] = useState<RunCreationValidationErrors>({});
+  const [runSuccess, setRunSuccess] = useState<string | null>(null);
+  const [selectedRunJobLinkId, setSelectedRunJobLinkId] = useState("");
   const [zohoError, setZohoError] = useState<string | null>(null);
   const [zohoForm, setZohoForm] = useState<ZohoMailboxInput>({ candidateId: candidateId ?? "", connection_status: "not_connected", email: "" });
   const [zohoFormErrors, setZohoFormErrors] = useState<ZohoMailboxValidationErrors>({});
@@ -70,12 +81,14 @@ export default function CandidateDetailScreen() {
       { data: candidateData, error: candidateError },
       { data: resumeData, error: resumeError },
       { data: zohoData, error: zohoFetchError },
-      { data: jobLinkData, error: jobLinkFetchError }
+      { data: jobLinkData, error: jobLinkFetchError },
+      { data: applicationRunData, error: applicationRunFetchError }
     ] = await Promise.all([
       supabase.from("candidates").select(candidateColumns).eq("id", candidateId).single(),
       supabase.from("candidate_resumes").select(resumeColumns).eq("candidate_id", candidateId).order("created_at", { ascending: false }),
       supabase.from("zoho_mailboxes").select(zohoColumns).eq("candidate_id", candidateId).order("created_at", { ascending: false }).limit(1).maybeSingle(),
-      supabase.from("job_links").select(jobLinkColumns).eq("candidate_id", candidateId).order("priority", { ascending: false }).order("created_at", { ascending: false })
+      supabase.from("job_links").select(jobLinkColumns).eq("candidate_id", candidateId).order("priority", { ascending: false }).order("created_at", { ascending: false }),
+      supabase.from("application_runs").select(applicationRunColumns).eq("candidate_id", candidateId).order("created_at", { ascending: false })
     ]);
 
     if (candidateError) {
@@ -126,7 +139,16 @@ export default function CandidateDetailScreen() {
       setJobLinkError(jobLinkFetchError.message);
       setJobLinks([]);
     } else {
-      setJobLinks((jobLinkData ?? []) as JobLinkRecord[]);
+      const nextJobLinks = (jobLinkData ?? []) as JobLinkRecord[];
+      setJobLinks(nextJobLinks);
+      setSelectedRunJobLinkId((current) => current || nextJobLinks[0]?.id || "");
+    }
+
+    if (applicationRunFetchError) {
+      setRunError(applicationRunFetchError.message);
+      setApplicationRuns([]);
+    } else {
+      setApplicationRuns((applicationRunData ?? []) as ApplicationRunRecord[]);
     }
 
     setIsLoading(false);
@@ -194,6 +216,42 @@ export default function CandidateDetailScreen() {
     }
 
     setIsUploading(false);
+  }
+
+  async function createRun() {
+    if (!candidateId || !canCreateRuns) {
+      return;
+    }
+
+    const readiness = buildRunReadiness({
+      activeResumeCount: resumes.filter((resume) => resume.is_active).length,
+      candidateId,
+      jobLinkId: selectedRunJobLinkId,
+      zohoMailboxCount: zohoMailbox ? 1 : 0
+    });
+    const nextErrors = validateRunCreation(readiness);
+    setRunFormErrors(nextErrors);
+
+    if (Object.keys(nextErrors).length > 0) {
+      return;
+    }
+
+    setIsCreatingRun(true);
+    setRunError(null);
+    setRunSuccess(null);
+
+    const { error: createError } = await supabase
+      .from("application_runs")
+      .insert(toApplicationRunPayload(readiness, profile?.id ?? null));
+
+    if (createError) {
+      setRunError(createError.message);
+    } else {
+      setRunSuccess("Dry-run queued.");
+      await loadDetail();
+    }
+
+    setIsCreatingRun(false);
   }
 
   function resetJobLinkForm() {
@@ -394,6 +452,26 @@ export default function CandidateDetailScreen() {
                       onUpdate={updateJobLinkField}
                       saveError={jobLinkError}
                       success={jobLinkSuccess}
+                    />
+                  ) : section === "Runs" ? (
+                    <RunsSection
+                      activeResumeCount={resumes.filter((resume) => resume.is_active).length}
+                      canCreate={canCreateRuns}
+                      candidateId={candidate.id}
+                      isCreating={isCreatingRun}
+                      jobLinks={jobLinks}
+                      onCreate={createRun}
+                      onSelectJobLink={(jobLinkId) => {
+                        setSelectedRunJobLinkId(jobLinkId);
+                        setRunFormErrors({});
+                        setRunSuccess(null);
+                      }}
+                      runError={runError}
+                      runFormErrors={runFormErrors}
+                      runs={applicationRuns}
+                      selectedJobLinkId={selectedRunJobLinkId}
+                      success={runSuccess}
+                      zohoMailboxCount={zohoMailbox ? 1 : 0}
                     />
                   ) : (
                     <Text className="mt-2 text-sm leading-6 text-zinc-400">Placeholder for a later approved phase.</Text>
@@ -700,6 +778,160 @@ function JobLinkStatusBadge({ status }: { status: JobLinkStatus }) {
     <Text
       className={`rounded-md border px-3 py-2 text-sm font-medium ${
         isDone ? "border-emerald-300 text-emerald-200" : isWarning ? "border-yellow-300 text-yellow-200" : "border-border text-zinc-300"
+      }`}
+    >
+      {status}
+    </Text>
+  );
+}
+
+function RunsSection({
+  activeResumeCount,
+  canCreate,
+  candidateId,
+  isCreating,
+  jobLinks,
+  onCreate,
+  onSelectJobLink,
+  runError,
+  runFormErrors,
+  runs,
+  selectedJobLinkId,
+  success,
+  zohoMailboxCount
+}: {
+  activeResumeCount: number;
+  canCreate: boolean;
+  candidateId: string;
+  isCreating: boolean;
+  jobLinks: JobLinkRecord[];
+  onCreate: () => Promise<void>;
+  onSelectJobLink: (jobLinkId: string) => void;
+  runError: string | null;
+  runFormErrors: RunCreationValidationErrors;
+  runs: ApplicationRunRecord[];
+  selectedJobLinkId: string;
+  success: string | null;
+  zohoMailboxCount: number;
+}) {
+  const readiness = buildRunReadiness({
+    activeResumeCount,
+    candidateId,
+    jobLinkId: selectedJobLinkId,
+    zohoMailboxCount
+  });
+
+  return (
+    <View className="mt-4 gap-4">
+      {canCreate ? (
+        <View className="gap-4">
+          <Text className="text-sm text-zinc-400">Create queued dry-run records for the future worker. This does not open the job link.</Text>
+          <View className="gap-2">
+            <Text className="text-sm font-medium text-zinc-300">Job Link</Text>
+            <View className="gap-2">
+              {jobLinks.length === 0 ? (
+                <Text className="text-sm text-zinc-400">Add a job link before creating a run.</Text>
+              ) : (
+                jobLinks.map((jobLink) => {
+                  const isActive = selectedJobLinkId === jobLink.id;
+
+                  return (
+                    <Pressable
+                      className={`rounded-md border p-3 ${isActive ? "border-zinc-100 bg-zinc-900" : "border-border bg-transparent"}`}
+                      key={jobLink.id}
+                      onPress={() => onSelectJobLink(jobLink.id)}
+                    >
+                      <Text className="text-sm font-semibold text-zinc-100">{jobLink.job_title || "Untitled job"}</Text>
+                      <Text className="mt-1 text-sm text-zinc-400">{jobLink.company_name || jobLink.normalized_url}</Text>
+                    </Pressable>
+                  );
+                })
+              )}
+            </View>
+            {runFormErrors.jobLinkId ? <Text className="text-sm text-red-300">{runFormErrors.jobLinkId}</Text> : null}
+          </View>
+          <ReadinessList readiness={readiness} />
+          {runFormErrors.readiness ? <Text className="text-sm text-red-300">{runFormErrors.readiness}</Text> : null}
+          <Pressable
+            className="min-h-11 items-center justify-center rounded-md bg-zinc-100 px-4 disabled:opacity-50"
+            disabled={isCreating || !readiness.canCreate}
+            onPress={() => void onCreate()}
+          >
+            <Text className="text-sm font-semibold text-zinc-950">{isCreating ? "Queueing..." : "Create Dry Run"}</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <Text className="text-sm text-zinc-400">Viewer role can inspect application runs but cannot create them.</Text>
+      )}
+
+      {success ? <Text className="text-sm text-emerald-300">{success}</Text> : null}
+      {runError ? <Text className="text-sm text-red-300">{runError}</Text> : null}
+
+      {runs.length === 0 ? (
+        <Text className="text-sm text-zinc-400">No application runs queued for this candidate.</Text>
+      ) : (
+        <View className="gap-3">
+          {runs.map((run) => {
+            const jobLink = jobLinks.find((item) => item.id === run.job_link_id);
+
+            return (
+              <View className="rounded-md border border-border p-4" key={run.id}>
+                <View className="gap-3 md:flex-row md:items-start md:justify-between">
+                  <View className="min-w-0 flex-1">
+                    <Text className="text-base font-semibold text-zinc-100">{jobLink?.job_title || "Untitled job"}</Text>
+                    <Text className="mt-1 text-sm text-zinc-400">{jobLink?.company_name || "Company not set"}</Text>
+                    <Text className="mt-2 text-sm text-zinc-500">{jobLink?.normalized_url || run.job_link_id}</Text>
+                    <View className="mt-3 gap-2">
+                      <DetailRow label="Mode" value={run.mode} />
+                      <DetailRow label="Current Step" value={run.current_step} />
+                      <DetailRow label="Readiness" value={run.readiness_score} />
+                      <DetailRow label="Error" value={run.error_message} />
+                    </View>
+                  </View>
+                  <View className="items-start gap-2 md:items-end">
+                    <RunStatusBadge status={run.status} />
+                    <Text className="text-sm text-zinc-500">{new Date(run.created_at).toLocaleString()}</Text>
+                  </View>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function ReadinessList({ readiness }: { readiness: ReturnType<typeof buildRunReadiness> }) {
+  const items = [
+    { label: "Candidate", ready: Boolean(readiness.candidateId) },
+    { label: "Active resume", ready: readiness.activeResumeCount > 0 },
+    { label: "Zoho mailbox", ready: readiness.zohoMailboxCount > 0 },
+    { label: "Job link", ready: Boolean(readiness.jobLinkId) }
+  ];
+
+  return (
+    <View className="gap-2 rounded-md border border-border p-4">
+      {items.map((item) => (
+        <View className="flex-row items-center justify-between gap-3" key={item.label}>
+          <Text className="text-sm text-zinc-400">{item.label}</Text>
+          <Text className={`text-sm font-semibold ${item.ready ? "text-emerald-300" : "text-yellow-200"}`}>
+            {item.ready ? "Ready" : "Missing"}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function RunStatusBadge({ status }: { status: ApplicationRunRecord["status"] }) {
+  const isDone = status === "dry_run_complete";
+  const isBlocked = status === "failed" || status === "stopped" || status === "manual_review_required";
+
+  return (
+    <Text
+      className={`rounded-md border px-3 py-2 text-sm font-medium ${
+        isDone ? "border-emerald-300 text-emerald-200" : isBlocked ? "border-yellow-300 text-yellow-200" : "border-border text-zinc-300"
       }`}
     >
       {status}

@@ -66,6 +66,10 @@ export function normalizeJobUrl(rawUrl: string) {
   url.hostname = url.hostname.toLowerCase();
   url.hash = "";
 
+  if (url.hostname.includes("workday")) {
+    url.search = "";
+  }
+
   if (url.pathname.length > 1) {
     url.pathname = url.pathname.replace(/\/+$/, "");
   }

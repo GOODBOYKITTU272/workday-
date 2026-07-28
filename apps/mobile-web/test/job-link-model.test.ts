@@ -21,7 +21,7 @@ describe("job link model", () => {
   });
 
   test("normalizes job URLs for duplicate detection", () => {
-    expect(normalizeJobUrl(" HTTPS://Company.WD1.MyWorkdayJobs.com/jobs/job/123/#top ")).toBe(
+    expect(normalizeJobUrl(" HTTPS://Company.WD1.MyWorkdayJobs.com/jobs/job/123/?utm_source=test#top ")).toBe(
       "https://company.wd1.myworkdayjobs.com/jobs/job/123"
     );
     expect(normalizeJobUrl("https://company.wd1.myworkdayjobs.com/jobs/job/123/")).toBe(

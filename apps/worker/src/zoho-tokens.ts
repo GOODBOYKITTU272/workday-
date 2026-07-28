@@ -15,6 +15,11 @@ export type ZohoMailboxTokenUpdate = {
   token_expires_at: string;
 };
 
+export type ZohoMailboxFailureUpdate = {
+  connection_status: "failed";
+  last_error: string;
+};
+
 type ZohoMailboxTokenClient = {
   from: (table: "zoho_mailboxes") => {
     update: (payload: ZohoMailboxTokenUpdate) => {
@@ -35,6 +40,13 @@ export function buildEncryptedZohoTokenUpdate(
     last_success_at: updatedAt,
     refresh_token_encrypted: encryptToken(input.refreshToken, encryptionKey),
     token_expires_at: input.expiresAt
+  };
+}
+
+export function buildZohoOAuthFailureUpdate(message: string): ZohoMailboxFailureUpdate {
+  return {
+    connection_status: "failed",
+    last_error: message
   };
 }
 

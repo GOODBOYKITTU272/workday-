@@ -15,6 +15,14 @@ ZOHO_CLIENT_SECRET=
 ZOHO_REDIRECT_URI=
 ```
 
-`ENCRYPTION_KEY` must be exactly 32 bytes. Service-role and Zoho client secret values belong only in the worker/runtime environment, never in Expo public variables.
+Generate a valid 32-byte `ENCRYPTION_KEY`:
+
+```bash
+openssl rand -base64 24
+```
+
+Service-role and Zoho client secret values belong only in the worker/runtime environment, never in Expo public variables.
 
 Phase 11 stores only encrypted Zoho token values in `public.zoho_mailboxes`. It does not read emails, parse OTPs, call Workday, use Playwright, claim runs, approve submit, or submit applications.
+
+Phase 12 adds server-side helpers for Zoho OAuth authorization URLs, signed state validation, callback validation, and authorization-code exchange into encrypted mailbox token updates. It still does not read emails, parse OTPs, call Workday, use Playwright, claim runs, approve submit, or submit applications.

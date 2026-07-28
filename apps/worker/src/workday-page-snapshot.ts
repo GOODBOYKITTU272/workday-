@@ -1,6 +1,7 @@
 import { detectWorkdayTenantFromUrl, isTrustedWorkdayHost, type WorkdayTenantDetectionResult } from "@applywizz/shared";
 
 import { createBrowserContext } from "./browser.js";
+import { decryptWorkdayPassword } from "./workday-password.js";
 
 type BrowserLauncher = Parameters<typeof createBrowserContext>[0];
 
@@ -183,6 +184,48 @@ export type WorkdayLoginPageInspectionResult =
   | ({ ok: true } & WorkdayLoginPageInspectionSignals)
   | { blockedReason: WorkdayLoginPageInspectionBlockedReason; ok: false };
 
+export type WorkdayLoginAttemptCredentials = {
+  email: string;
+  passwordEncrypted: string;
+};
+
+export type WorkdayPostLoginState =
+  | "account_locked_possible"
+  | "invalid_credentials_possible"
+  | "login_success_possible"
+  | "otp_required"
+  | "still_on_login_page"
+  | "unknown"
+  | "verification_required";
+
+export type WorkdayLoginAttemptBlockedReason =
+  | "account_missing"
+  | "email_field_not_found"
+  | "email_missing"
+  | "expected_tenant_missing"
+  | "invalid_url"
+  | "login_attempt_failed"
+  | "password_decrypt_failed"
+  | "password_field_not_found"
+  | "sign_in_action_not_found"
+  | "tenant_mismatch_after_login"
+  | "tenant_mismatch_before_login"
+  | "unsupported_protocol"
+  | "untrusted_host"
+  | "untrusted_redirect_after_login"
+  | "untrusted_redirect_before_login";
+
+export type WorkdayLoginAttemptResult =
+  | {
+      confidence: WorkdayLoginPageInspectionConfidence;
+      hostname: string;
+      ok: true;
+      post_login_state: WorkdayPostLoginState;
+      tenant_key: string | null;
+      timestamp: string;
+    }
+  | { blockedReason: WorkdayLoginAttemptBlockedReason; ok: false };
+
 export type WorkdayPageOpenCheckResult =
   | {
       error: string;
@@ -211,16 +254,17 @@ type WorkdayPageBlockedRedirectResult = {
 type PageLike = {
   goto: (url: string, options?: { timeout?: number; waitUntil?: "commit" | "domcontentloaded" | "load" | "networkidle" }) => Promise<unknown>;
   getByRole: (
-    role: "button" | "link",
-    options: { name: RegExp | string }
+    role: "alert" | "button" | "link",
+    options?: { name: RegExp | string }
   ) => {
     click: () => Promise<void>;
     count: () => Promise<number>;
     isEnabled: () => Promise<boolean>;
     isVisible: () => Promise<boolean>;
   };
-  // Structural presence checks only (.count()) — never used to fill or click.
-  locator: (selector: string) => { count: () => Promise<number> };
+  // .count() for structural presence checks; .fill() is only ever called on the
+  // single, already-guard-confirmed email/password field during a login attempt.
+  locator: (selector: string) => { count: () => Promise<number>; fill: (value: string) => Promise<void> };
   waitForLoadState?: (state?: "domcontentloaded" | "load" | "networkidle", options?: { signal?: AbortSignal; timeout?: number }) => Promise<void>;
   title: () => Promise<string>;
   url: () => string;
@@ -228,6 +272,8 @@ type PageLike = {
 };
 
 const WORKDAY_OPEN_TIMEOUT_MS = 30_000;
+const PASSWORD_FIELD_SELECTOR = 'input[type="password"]';
+const EMAIL_FIELD_SELECTOR = 'input[type="email"], input[autocomplete="username"], input[autocomplete="email"]';
 
 export async function openTrustedWorkdayJobPage(
   rawUrl: string,
@@ -496,6 +542,131 @@ export async function inspectTrustedWorkdayLoginPage(
     return await inspectSafeLoginPageSignals(openedPage, timestamp);
   } catch {
     return { blockedReason: "inspection_failed", ok: false };
+  } finally {
+    await page?.close();
+    await context?.close();
+    await browser?.close();
+  }
+}
+
+// Fills the single confirmed email and password field and clicks the single confirmed
+// sign-in action, only after every tenant/host guard passes. No other field is touched,
+// no other button is clicked, and the decrypted password never leaves this function.
+export async function attemptTrustedWorkdayLogin(
+  rawUrl: string,
+  expectedTenantKey: string | null,
+  credentials: WorkdayLoginAttemptCredentials,
+  encryptionKey: string,
+  options?: { launcher?: BrowserLauncher; now?: () => string }
+): Promise<WorkdayLoginAttemptResult> {
+  const parsed = validateTrustedWorkdayJobUrl(rawUrl);
+
+  if (!parsed.ok) {
+    return { blockedReason: parsed.error_code, ok: false };
+  }
+
+  const trimmedExpectedTenantKey = expectedTenantKey?.trim() || null;
+
+  if (!trimmedExpectedTenantKey) {
+    return { blockedReason: "expected_tenant_missing", ok: false };
+  }
+
+  const preNavigationTenantKey = parsed.detection.tenant_key?.trim() || null;
+
+  if (!preNavigationTenantKey || preNavigationTenantKey !== trimmedExpectedTenantKey) {
+    return { blockedReason: "tenant_mismatch_before_login", ok: false };
+  }
+
+  const trimmedEmail = credentials.email.trim();
+
+  if (!trimmedEmail) {
+    return { blockedReason: "email_missing", ok: false };
+  }
+
+  let decryptedPassword: string;
+
+  try {
+    decryptedPassword = decryptWorkdayPassword(credentials.passwordEncrypted, encryptionKey);
+  } catch {
+    return { blockedReason: "password_decrypt_failed", ok: false };
+  }
+
+  if (!decryptedPassword) {
+    return { blockedReason: "password_decrypt_failed", ok: false };
+  }
+
+  let browser: Awaited<ReturnType<typeof createBrowserContext>>["browser"] | null = null;
+  let context: Awaited<ReturnType<typeof createBrowserContext>>["context"] | null = null;
+  let page: PageLike | null = null;
+
+  try {
+    const created = await createBrowserContext(options?.launcher);
+    browser = created.browser;
+    context = created.context;
+    const openedPage = await context.newPage();
+    page = openedPage;
+    const timestamp = options?.now?.() ?? new Date().toISOString();
+
+    await openedPage.goto(parsed.normalizedUrl, {
+      timeout: WORKDAY_OPEN_TIMEOUT_MS,
+      waitUntil: "domcontentloaded"
+    });
+
+    const preFillValidation = validateTrustedWorkdayFinalUrl(openedPage.url());
+
+    if (!preFillValidation.ok) {
+      return { blockedReason: "untrusted_redirect_before_login", ok: false };
+    }
+
+    const preFillTenantKey = preFillValidation.detection.tenant_key?.trim() || null;
+
+    if (!preFillTenantKey || preFillTenantKey !== trimmedExpectedTenantKey) {
+      return { blockedReason: "tenant_mismatch_before_login", ok: false };
+    }
+
+    const emailField = await findSingleSafeLoginField(openedPage, EMAIL_FIELD_SELECTOR);
+
+    if (!emailField.ok) {
+      return { blockedReason: "email_field_not_found", ok: false };
+    }
+
+    const passwordField = await findSingleSafeLoginField(openedPage, PASSWORD_FIELD_SELECTOR);
+
+    if (!passwordField.ok) {
+      return { blockedReason: "password_field_not_found", ok: false };
+    }
+
+    const signInAction = await findSingleSafeSignInLocator(openedPage);
+
+    if (!signInAction.ok) {
+      return { blockedReason: "sign_in_action_not_found", ok: false };
+    }
+
+    await emailField.locator.fill(trimmedEmail);
+    await passwordField.locator.fill(decryptedPassword);
+    decryptedPassword = "";
+
+    await signInAction.locator.click();
+
+    if (openedPage.waitForLoadState) {
+      await openedPage.waitForLoadState("domcontentloaded");
+    }
+
+    const postLoginValidation = validateTrustedWorkdayFinalUrl(openedPage.url());
+
+    if (!postLoginValidation.ok) {
+      return { blockedReason: "untrusted_redirect_after_login", ok: false };
+    }
+
+    const postLoginTenantKey = postLoginValidation.detection.tenant_key?.trim() || null;
+
+    if (!postLoginTenantKey || postLoginTenantKey !== trimmedExpectedTenantKey) {
+      return { blockedReason: "tenant_mismatch_after_login", ok: false };
+    }
+
+    return await classifyPostLoginAttempt(openedPage, postLoginValidation.detection, timestamp);
+  } catch {
+    return { blockedReason: "login_attempt_failed", ok: false };
   } finally {
     await page?.close();
     await context?.close();
@@ -1164,12 +1335,8 @@ async function inspectSafeLoginPageSignals(
   page: Pick<PageLike, "getByRole" | "locator">,
   timestamp: string
 ): Promise<{ ok: true } & WorkdayLoginPageInspectionSignals> {
-  const passwordFieldCandidateDetected = (await page.locator('input[type="password"]').count().catch(() => 0)) > 0;
-  const emailFieldCandidateDetected =
-    (await page
-      .locator('input[type="email"], input[autocomplete="username"], input[autocomplete="email"]')
-      .count()
-      .catch(() => 0)) > 0;
+  const passwordFieldCandidateDetected = (await page.locator(PASSWORD_FIELD_SELECTOR).count().catch(() => 0)) > 0;
+  const emailFieldCandidateDetected = (await page.locator(EMAIL_FIELD_SELECTOR).count().catch(() => 0)) > 0;
   const signInActionCandidateDetected = await hasVisibleSignal(page, "button", [/\bsign in\b/i, /\bsign on\b/i, /\blog in\b/i, /\blogin\b/i]);
 
   let confidence: WorkdayLoginPageInspectionConfidence = "unknown";
@@ -1189,6 +1356,91 @@ async function inspectSafeLoginPageSignals(
     ok: true,
     password_field_candidate_detected: passwordFieldCandidateDetected,
     sign_in_action_candidate_detected: signInActionCandidateDetected,
+    timestamp
+  };
+}
+
+type SafeLoginFieldResult = { locator: ReturnType<PageLike["locator"]>; ok: true } | { ok: false };
+
+async function findSingleSafeLoginField(page: Pick<PageLike, "locator">, selector: string): Promise<SafeLoginFieldResult> {
+  const locator = page.locator(selector);
+  const count = await locator.count().catch(() => 0);
+
+  if (count !== 1) {
+    return { ok: false };
+  }
+
+  return { locator, ok: true };
+}
+
+type SafeSignInLocatorResult = { locator: ReturnType<PageLike["getByRole"]>; ok: true } | { ok: false };
+
+async function findSingleSafeSignInLocator(page: Pick<PageLike, "getByRole">): Promise<SafeSignInLocatorResult> {
+  const pattern = /^\s*(sign in|sign on|log in|login)\s*$/i;
+  const buttonLocator = page.getByRole("button", { name: pattern });
+  const linkLocator = page.getByRole("link", { name: pattern });
+
+  const [buttonCount, linkCount] = await Promise.all([buttonLocator.count(), linkLocator.count()]);
+  const totalCount = buttonCount + linkCount;
+
+  if (totalCount !== 1) {
+    return { ok: false };
+  }
+
+  return { locator: buttonCount === 1 ? buttonLocator : linkLocator, ok: true };
+}
+
+const OTP_STATE_PATTERN = /\bpasscode\b|\bone[\s-]?time\b|\botp\b|enter.{0,12}code|verification code/i;
+const VERIFICATION_STATE_PATTERN = /verify your (email|identity)|check your email|verification required|confirm your identity/i;
+const ACCOUNT_LOCKED_STATE_PATTERN = /account.{0,10}locked|too many attempts|temporarily locked/i;
+const SIGN_IN_PAGE_PATTERN = /sign[\s-]?in|sign[\s-]?on|log[\s-]?in|login/i;
+
+async function classifyPostLoginAttempt(
+  page: Pick<PageLike, "getByRole" | "title" | "url">,
+  detection: WorkdayTenantDetectionResult,
+  timestamp: string
+): Promise<Extract<WorkdayLoginAttemptResult, { ok: true }>> {
+  const finalUrl = page.url();
+  const pageTitle = (await page.title()).trim() || null;
+  const urlTitleText = `${finalUrl} ${pageTitle ?? ""}`.toLowerCase();
+  const hostname = new URL(finalUrl).hostname.toLowerCase();
+
+  let postLoginState: WorkdayPostLoginState;
+  let confidence: WorkdayLoginPageInspectionConfidence;
+
+  if (OTP_STATE_PATTERN.test(urlTitleText)) {
+    postLoginState = "otp_required";
+    confidence = "high";
+  } else if (VERIFICATION_STATE_PATTERN.test(urlTitleText)) {
+    postLoginState = "verification_required";
+    confidence = "high";
+  } else if (ACCOUNT_LOCKED_STATE_PATTERN.test(urlTitleText)) {
+    postLoginState = "account_locked_possible";
+    confidence = "high";
+  } else if (SIGN_IN_PAGE_PATTERN.test(urlTitleText)) {
+    const alertVisible = await page
+      .getByRole("alert")
+      .isVisible()
+      .catch(() => false);
+
+    if (alertVisible) {
+      postLoginState = "invalid_credentials_possible";
+      confidence = "medium";
+    } else {
+      postLoginState = "still_on_login_page";
+      confidence = "low";
+    }
+  } else {
+    postLoginState = "login_success_possible";
+    confidence = "medium";
+  }
+
+  return {
+    confidence,
+    hostname,
+    ok: true,
+    post_login_state: postLoginState,
+    tenant_key: detection.tenant_key,
     timestamp
   };
 }

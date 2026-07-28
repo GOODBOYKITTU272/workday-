@@ -41,6 +41,14 @@ function createDeps(overrides: Partial<RunProcessorDeps> = {}) {
   const manualReviewItems: ManualReviewItemInsert[] = [];
 
   const deps: RunProcessorDeps = {
+    attemptWorkdayLogin: async () => ({
+      confidence: "medium",
+      hostname: "acme.wd5.myworkdayjobs.com",
+      ok: true,
+      post_login_state: "login_success_possible",
+      tenant_key: "acme",
+      timestamp: "2026-07-28T00:00:00.000Z"
+    }),
     checkWorkdayLoginReadiness: async () => ({ ok: true }),
     claimNextRun: async () => claimedRun,
     inspectWorkdayLoginPage: async () => ({
@@ -999,6 +1007,205 @@ describe("application run processor", () => {
 
       return { automationLogs, manualReviewItems, runSteps, runUpdates };
     }
+  });
+
+  describe("Workday login attempt (route_to_login_flow, readiness ok, login page confirmed)", () => {
+    function createReadyLoginRouteDeps(overrides: Partial<RunProcessorDeps> = {}) {
+      return createDeps({
+        openWorkdayPage: async (): Promise<WorkdayPageOpenCheckResult> => ({
+          ok: true,
+          discovery: {
+            action_type: "sign_in_available",
+            confidence: "high",
+            safe_label_category: "sign_in",
+            selector_category: "button",
+            source: "selector_signal",
+            timestamp: "2026-07-28T00:00:00.000Z"
+          },
+          snapshot: { ...trustedSnapshot, page_kind: "sign_in_page" },
+          url: trustedSnapshot.final_url
+        }),
+        ...overrides
+      });
+    }
+
+    async function runLoginAttemptScenario(overrides: Partial<RunProcessorDeps>) {
+      const { automationLogs, deps, manualReviewItems, runSteps, runUpdates } = createReadyLoginRouteDeps(overrides);
+
+      await expect(processOneApplicationRun(deps)).resolves.toEqual({ runId: "run-id", status: "snapshot_complete" });
+
+      return { automationLogs, manualReviewItems, runSteps, runUpdates };
+    }
+
+    it("passes the candidate, tenant, and URL to the login attempt only when routed to login", async () => {
+      const calls: Array<{ candidateId: string; tenantKey: string; url: string }> = [];
+      const { deps } = createReadyLoginRouteDeps({
+        attemptWorkdayLogin: async (candidateId, tenantKey, url) => {
+          calls.push({ candidateId, tenantKey, url });
+
+          return {
+            confidence: "medium",
+            hostname: "acme.wd5.myworkdayjobs.com",
+            ok: true,
+            post_login_state: "login_success_possible",
+            tenant_key: "acme",
+            timestamp: "2026-07-28T00:00:00.000Z"
+          };
+        }
+      });
+
+      await processOneApplicationRun(deps);
+
+      expect(calls).toEqual([{ candidateId: "candidate-id", tenantKey: "acme", url: trustedSnapshot.final_url }]);
+    });
+
+    it("does not attempt login for routes other than route_to_login_flow", async () => {
+      let callCount = 0;
+      const { deps } = createDeps({
+        attemptWorkdayLogin: async () => {
+          callCount += 1;
+
+          return {
+            confidence: "medium",
+            hostname: "acme.wd5.myworkdayjobs.com",
+            ok: true,
+            post_login_state: "login_success_possible",
+            tenant_key: "acme",
+            timestamp: "2026-07-28T00:00:00.000Z"
+          };
+        }
+      });
+
+      await processOneApplicationRun(deps);
+
+      expect(callCount).toBe(0);
+    });
+
+    it("does not attempt login when readiness is not ok, even though the route is route_to_login_flow", async () => {
+      let callCount = 0;
+      const { deps } = createReadyLoginRouteDeps({
+        attemptWorkdayLogin: async () => {
+          callCount += 1;
+
+          return { blockedReason: "login_attempt_failed" as const, ok: false };
+        },
+        checkWorkdayLoginReadiness: async () => ({ blockedReason: "account_missing", ok: false })
+      });
+
+      await processOneApplicationRun(deps);
+
+      expect(callCount).toBe(0);
+    });
+
+    it("does not attempt login when the login page was not confirmed", async () => {
+      let callCount = 0;
+      const { deps } = createReadyLoginRouteDeps({
+        attemptWorkdayLogin: async () => {
+          callCount += 1;
+
+          return { blockedReason: "login_attempt_failed" as const, ok: false };
+        },
+        inspectWorkdayLoginPage: async () => ({
+          confidence: "unknown",
+          email_field_candidate_detected: false,
+          login_page_detected: false,
+          ok: true,
+          password_field_candidate_detected: false,
+          sign_in_action_candidate_detected: false,
+          timestamp: "2026-07-28T00:00:00.000Z"
+        })
+      });
+
+      await processOneApplicationRun(deps);
+
+      expect(callCount).toBe(0);
+    });
+
+    it("records safe metadata and no error_code for a possible login success", async () => {
+      const { manualReviewItems, runSteps, runUpdates } = await runLoginAttemptScenario({});
+
+      expect(runSteps[0]?.metadata).toEqual(
+        expect.objectContaining({
+          login_attempt: {
+            blocked_reason: null,
+            confidence: "medium",
+            hostname: "acme.wd5.myworkdayjobs.com",
+            ok: true,
+            post_login_state: "login_success_possible",
+            tenant_key: "acme"
+          }
+        })
+      );
+      expect(manualReviewItems).toEqual([expect.objectContaining({ error_code: null, review_reason: "route_to_login_flow" })]);
+      expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+    });
+
+    it.each(["otp_required", "verification_required", "invalid_credentials_possible", "account_locked_possible", "still_on_login_page"] as const)(
+      "records %s safely and keeps the run manual_review_required",
+      async (postLoginState) => {
+        const { runSteps, runUpdates } = await runLoginAttemptScenario({
+          attemptWorkdayLogin: async () => ({
+            confidence: "high",
+            hostname: "acme.wd5.myworkdayjobs.com",
+            ok: true,
+            post_login_state: postLoginState,
+            tenant_key: "acme",
+            timestamp: "2026-07-28T00:00:00.000Z"
+          })
+        });
+
+        expect(runSteps[0]?.metadata).toEqual(
+          expect.objectContaining({ login_attempt: expect.objectContaining({ ok: true, post_login_state: postLoginState }) })
+        );
+        expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+      }
+    );
+
+    it.each([
+      "untrusted_redirect_after_login",
+      "tenant_mismatch_after_login",
+      "email_field_not_found",
+      "password_field_not_found",
+      "sign_in_action_not_found"
+    ] as const)("sets a safe error_code and keeps the run manual_review_required for %s", async (blockedReason) => {
+      const { manualReviewItems, runSteps, runUpdates } = await runLoginAttemptScenario({
+        attemptWorkdayLogin: async () => ({ blockedReason, ok: false })
+      });
+
+      expect(runSteps[0]?.metadata).toEqual(
+        expect.objectContaining({ login_attempt: { blocked_reason: blockedReason, ok: false } })
+      );
+      expect(manualReviewItems).toEqual([
+        expect.objectContaining({ error_code: `WORKDAY_LOGIN_ATTEMPT_${blockedReason.toUpperCase()}` })
+      ]);
+      expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+    });
+
+    it("keeps the run manual_review_required and logs nothing sensitive when the login attempt itself throws", async () => {
+      const { automationLogs, manualReviewItems, runSteps, runUpdates } = await runLoginAttemptScenario({
+        attemptWorkdayLogin: async () => {
+          throw new Error("playwright trace containing leaked-login-secret and super-secret-password");
+        }
+      });
+
+      expect(runSteps[0]?.metadata).toEqual(
+        expect.objectContaining({ login_attempt: { blocked_reason: "login_attempt_failed", ok: false } })
+      );
+      expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+      expect(JSON.stringify({ automationLogs, manualReviewItems, runSteps })).not.toContain("leaked-login-secret");
+    });
+
+    it("never includes a password, email, or raw error message in run_steps, automation_logs, or manual_review_items", async () => {
+      const { automationLogs, manualReviewItems, runSteps } = await runLoginAttemptScenario({
+        attemptWorkdayLogin: async () => {
+          throw new Error("email candidate@example.com password super-secret-password token abc123");
+        }
+      });
+
+      const writes = JSON.stringify({ automationLogs, manualReviewItems, runSteps });
+
+      expect(writes).not.toMatch(/candidate@example\.com|super-secret-password|token abc123/i);
+    });
   });
 
   it("updates a claimed run safely when an unknown error occurs", async () => {

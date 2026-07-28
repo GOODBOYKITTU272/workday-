@@ -3,10 +3,12 @@ import { type WorkerRunReadinessInput, validateWorkerRunReadiness } from "./queu
 import {
   type SafeWorkdayPageSnapshot,
   type WorkdayApplyClickResult,
+  type WorkdayLoginAttemptResult,
   buildPostApplyDecisionRoute,
   type WorkdayLandingActionDiscovery,
   type WorkdayLoginPageInspectionResult,
   type WorkdayPageOpenCheckResult,
+  attemptTrustedWorkdayLogin,
   classifyPostApplyLandingState,
   inspectTrustedWorkdayLoginPage,
   runWorkdayApplyClickDryRun
@@ -32,6 +34,7 @@ export type RunProcessorResult =
   | { errorCode: string; runId: null | string; status: "error" };
 
 export type RunProcessorDeps = {
+  attemptWorkdayLogin: (candidateId: string, tenantKey: string, url: string) => Promise<WorkdayLoginAttemptResult>;
   checkWorkdayLoginReadiness: (candidateId: string, tenantKey: string | null) => Promise<WorkdayLoginReadinessResult>;
   claimNextRun: () => Promise<ClaimedApplicationRun | null>;
   inspectWorkdayLoginPage: (url: string, expectedTenantKey: string | null) => Promise<WorkdayLoginPageInspectionResult>;
@@ -248,6 +251,29 @@ function createSupabaseRunProcessorDeps(): RunProcessorDeps {
   const client = createWorkerSupabaseClient(env);
 
   return {
+    async attemptWorkdayLogin(candidateId, tenantKey, url) {
+      const { data, error } = await client
+        .from("workday_accounts")
+        .select("email,password_encrypted")
+        .eq("candidate_id", candidateId)
+        .eq("tenant_key", tenantKey)
+        .maybeSingle();
+
+      if (error) {
+        throw error;
+      }
+
+      if (!data?.email || !data?.password_encrypted) {
+        return { blockedReason: "account_missing", ok: false };
+      }
+
+      return attemptTrustedWorkdayLogin(
+        url,
+        tenantKey,
+        { email: data.email as string, passwordEncrypted: data.password_encrypted as string },
+        env.encryptionKey
+      );
+    },
     async checkWorkdayLoginReadiness(candidateId, tenantKey) {
       if (!tenantKey) {
         return { blockedReason: "tenant_unknown", ok: false };
@@ -408,8 +434,18 @@ async function finishSnapshotSuccess(
   const postApplyDecision = buildPostApplyDecisionRoute(postApplyState);
   const loginReadiness = await checkLoginReadinessIfRouted(deps, run, postApplyDecision.recommended_next_route, finalTenantKey);
   const loginPageInspection = await inspectLoginPageIfRouted(deps, postApplyDecision.recommended_next_route, snapshot.final_url, finalTenantKey);
+  const loginAttempt = await attemptLoginIfReady(
+    deps,
+    run,
+    postApplyDecision.recommended_next_route,
+    loginReadiness,
+    loginPageInspection,
+    snapshot.final_url,
+    finalTenantKey
+  );
   const metadata = {
     ...buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
+    login_attempt: buildSafeLoginAttemptMetadata(loginAttempt),
     login_page_inspection: buildSafeLoginPageInspectionMetadata(loginPageInspection),
     login_readiness: buildSafeLoginReadinessMetadata(loginReadiness),
     post_apply_decision: buildSafePostApplyDecisionMetadata(postApplyDecision),
@@ -449,7 +485,7 @@ async function finishSnapshotSuccess(
     run,
     buildManualReviewItemPayload({
       category: postApplyDecision.recommended_next_route,
-      errorCode: loginReadinessErrorCode(loginReadiness),
+      errorCode: loginAttemptErrorCode(loginAttempt) ?? loginReadinessErrorCode(loginReadiness),
       hostname: snapshot.hostname,
       postApplyState: postApplyState.post_apply_state,
       riskLevel: postApplyDecision.route_confidence,
@@ -473,9 +509,19 @@ async function finishApplyClickSuccess(
   const postApplyDecision = buildPostApplyDecisionRoute(postApplyState);
   const loginReadiness = await checkLoginReadinessIfRouted(deps, run, postApplyDecision.recommended_next_route, finalTenantKey);
   const loginPageInspection = await inspectLoginPageIfRouted(deps, postApplyDecision.recommended_next_route, snapshot.final_url, finalTenantKey);
+  const loginAttempt = await attemptLoginIfReady(
+    deps,
+    run,
+    postApplyDecision.recommended_next_route,
+    loginReadiness,
+    loginPageInspection,
+    snapshot.final_url,
+    finalTenantKey
+  );
   const metadata = {
     ...buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
     apply_click: buildSafeApplyClickMetadata(applyClick),
+    login_attempt: buildSafeLoginAttemptMetadata(loginAttempt),
     login_page_inspection: buildSafeLoginPageInspectionMetadata(loginPageInspection),
     login_readiness: buildSafeLoginReadinessMetadata(loginReadiness),
     post_apply_decision: buildSafePostApplyDecisionMetadata(postApplyDecision),
@@ -515,7 +561,7 @@ async function finishApplyClickSuccess(
     run,
     buildManualReviewItemPayload({
       category: postApplyDecision.recommended_next_route,
-      errorCode: loginReadinessErrorCode(loginReadiness),
+      errorCode: loginAttemptErrorCode(loginAttempt) ?? loginReadinessErrorCode(loginReadiness),
       hostname: applyClick.after_hostname,
       postApplyState: postApplyState.post_apply_state,
       riskLevel: postApplyDecision.route_confidence,
@@ -875,6 +921,65 @@ function buildSafeLoginPageInspectionMetadata(loginPageInspection: WorkdayLoginP
     password_field_candidate_detected: loginPageInspection.password_field_candidate_detected,
     sign_in_action_candidate_detected: loginPageInspection.sign_in_action_candidate_detected
   };
+}
+
+async function attemptLoginIfReady(
+  deps: RunProcessorDeps,
+  run: ClaimedApplicationRun,
+  category: ManualReviewCategory,
+  loginReadiness: WorkdayLoginReadinessResult | null,
+  loginPageInspection: WorkdayLoginPageInspectionResult | null,
+  url: string,
+  tenantKey: string | null
+): Promise<WorkdayLoginAttemptResult | null> {
+  if (category !== "route_to_login_flow") {
+    return null;
+  }
+
+  if (!loginReadiness?.ok) {
+    return null;
+  }
+
+  if (!loginPageInspection?.ok || !loginPageInspection.login_page_detected) {
+    return null;
+  }
+
+  if (!tenantKey) {
+    return null;
+  }
+
+  try {
+    return await deps.attemptWorkdayLogin(run.candidate_id, tenantKey, url);
+  } catch {
+    return { blockedReason: "login_attempt_failed", ok: false };
+  }
+}
+
+function buildSafeLoginAttemptMetadata(loginAttempt: WorkdayLoginAttemptResult | null) {
+  if (!loginAttempt) {
+    return null;
+  }
+
+  if (!loginAttempt.ok) {
+    return { blocked_reason: loginAttempt.blockedReason, ok: false };
+  }
+
+  return {
+    blocked_reason: null,
+    confidence: loginAttempt.confidence,
+    hostname: loginAttempt.hostname,
+    ok: true,
+    post_login_state: loginAttempt.post_login_state,
+    tenant_key: loginAttempt.tenant_key
+  };
+}
+
+function loginAttemptErrorCode(loginAttempt: WorkdayLoginAttemptResult | null): null | string {
+  if (!loginAttempt || loginAttempt.ok) {
+    return null;
+  }
+
+  return `WORKDAY_LOGIN_ATTEMPT_${loginAttempt.blockedReason.toUpperCase()}`;
 }
 
 function buildBlockedPageOpenMetadata(result: Exclude<WorkdayPageOpenCheckResult, { ok: true }>) {

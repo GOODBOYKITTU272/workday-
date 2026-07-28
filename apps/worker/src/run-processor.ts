@@ -2,9 +2,10 @@ import { createWorkerSupabaseClient } from "./worker-env.js";
 import { type WorkerRunReadinessInput, validateWorkerRunReadiness } from "./queue-readiness.js";
 import {
   type SafeWorkdayPageSnapshot,
+  type WorkdayApplyClickResult,
   type WorkdayLandingActionDiscovery,
   type WorkdayPageOpenCheckResult,
-  runWorkdayPageOpenCheck
+  runWorkdayApplyClickDryRun
 } from "./workday-page-snapshot.js";
 
 export type ClaimedApplicationRun = {
@@ -19,6 +20,8 @@ export type RunProcessorResult =
   | { status: "no_work" }
   | { issues: string[]; runId: string; status: "readiness_failed" }
   | { runId: string; status: "snapshot_complete" }
+  | { runId: string; status: "apply_click_complete" }
+  | { runId: string; status: "apply_click_blocked" }
   | { runId: string; status: "snapshot_blocked" }
   | { runId: string; status: "tenant_mismatch" }
   | { errorCode: string; runId: null | string; status: "error" };
@@ -65,6 +68,7 @@ export type AutomationLogInsert = {
 
 const READINESS_STEP_NAME = "readiness_checked";
 const WORKDAY_PAGE_SNAPSHOT_STEP_NAME = "workday_page_snapshot";
+const WORKDAY_APPLY_CLICK_STEP_NAME = "workday_apply_click";
 const UNKNOWN_WORKER_ERROR = "UNKNOWN_WORKER_ERROR";
 
 export async function processOneApplicationRun(deps: RunProcessorDeps = createSupabaseRunProcessorDeps()) {
@@ -107,14 +111,35 @@ export async function processOneApplicationRun(deps: RunProcessorDeps = createSu
       return { runId: claimedRun.id, status: "tenant_mismatch" } satisfies RunProcessorResult;
     }
 
-    await finishSnapshotSuccess(
-      deps,
-      claimedRun,
-      pageOpenResult.snapshot,
-      pageOpenResult.discovery,
-      expectedTenantKey,
-      finalTenantKey
-    );
+    if (pageOpenResult.apply_click) {
+      if (pageOpenResult.apply_click.click_result === "clicked") {
+        await finishApplyClickSuccess(
+          deps,
+          claimedRun,
+          pageOpenResult.snapshot,
+          pageOpenResult.discovery,
+          pageOpenResult.apply_click,
+          expectedTenantKey,
+          pageOpenResult.apply_click.after_tenant_key?.trim() || null
+        );
+
+        return { runId: claimedRun.id, status: "apply_click_complete" } satisfies RunProcessorResult;
+      }
+
+      await finishApplyClickBlocked(
+        deps,
+        claimedRun,
+        pageOpenResult.snapshot,
+        pageOpenResult.discovery,
+        pageOpenResult.apply_click,
+        expectedTenantKey,
+        pageOpenResult.apply_click.after_tenant_key?.trim() || null
+      );
+
+      return { runId: claimedRun.id, status: "apply_click_blocked" } satisfies RunProcessorResult;
+    }
+
+    await finishSnapshotSuccess(deps, claimedRun, pageOpenResult.snapshot, pageOpenResult.discovery, expectedTenantKey, finalTenantKey);
 
     return { runId: claimedRun.id, status: "snapshot_complete" } satisfies RunProcessorResult;
   } catch {
@@ -198,7 +223,7 @@ function createSupabaseRunProcessorDeps(): RunProcessorDeps {
         zohoMailboxCount: zohoMailboxCount ?? 0
       };
     },
-    openWorkdayPage: async (jobUrl) => runWorkdayPageOpenCheck(jobUrl),
+    openWorkdayPage: async (jobUrl) => runWorkdayApplyClickDryRun(jobUrl),
     async updateRun(runId, payload) {
       const { error } = await client.from("application_runs").update(payload).eq("id", runId);
 
@@ -279,6 +304,95 @@ async function finishSnapshotSuccess(
     error_code: null,
     error_message: null,
     readiness_score: "needs_review",
+    status: "manual_review_required"
+  });
+}
+
+async function finishApplyClickSuccess(
+  deps: RunProcessorDeps,
+  run: ClaimedApplicationRun,
+  snapshot: SafeWorkdayPageSnapshot,
+  discovery: WorkdayLandingActionDiscovery,
+  applyClick: WorkdayApplyClickResult,
+  expectedTenantKey: string | null,
+  finalTenantKey: string | null
+) {
+  const metadata = {
+    ...buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
+    apply_click: buildSafeApplyClickMetadata(applyClick),
+    landing_action: discovery
+  };
+  const completedAt = getNow(deps);
+  const step = await deps.insertRunStep({
+    application_run_id: run.id,
+    completed_at: completedAt,
+    message: "Workday Apply action clicked and safe snapshot captured. Worker stops before login or question extraction.",
+    metadata,
+    step_name: WORKDAY_APPLY_CLICK_STEP_NAME,
+    step_order: 2,
+    step_status: "success"
+  });
+
+  await deps.insertAutomationLog({
+    application_run_id: run.id,
+    context: metadata,
+    level: "info",
+    message: "Workday Apply action clicked and safe snapshot captured. Worker stops before login or question extraction.",
+    run_step_id: step.id
+  });
+
+  await deps.updateRun(run.id, {
+    completed_at: completedAt,
+    current_step: WORKDAY_APPLY_CLICK_STEP_NAME,
+    error_code: null,
+    error_message: null,
+    readiness_score: "needs_review",
+    status: "manual_review_required"
+  });
+}
+
+async function finishApplyClickBlocked(
+  deps: RunProcessorDeps,
+  run: ClaimedApplicationRun,
+  snapshot: SafeWorkdayPageSnapshot,
+  discovery: WorkdayLandingActionDiscovery,
+  applyClick: WorkdayApplyClickResult,
+  expectedTenantKey: string | null,
+  finalTenantKey: string | null
+) {
+  const metadata = {
+    ...buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
+    apply_click: buildSafeApplyClickMetadata(applyClick),
+    landing_action: discovery
+  };
+  const completedAt = getNow(deps);
+  const step = await deps.insertRunStep({
+    application_run_id: run.id,
+    completed_at: completedAt,
+    error_code: applyClick.error_code,
+    error_message: "Apply action could not be clicked safely.",
+    message: "Workday Apply action could not be clicked safely. Worker stops before login or question extraction.",
+    metadata,
+    step_name: WORKDAY_APPLY_CLICK_STEP_NAME,
+    step_order: 2,
+    step_status: "failed"
+  });
+
+  await deps.insertAutomationLog({
+    application_run_id: run.id,
+    context: metadata,
+    error_code: applyClick.error_code,
+    level: "warn",
+    message: "Workday Apply action could not be clicked safely. Worker stops before login or question extraction.",
+    run_step_id: step.id
+  });
+
+  await deps.updateRun(run.id, {
+    completed_at: completedAt,
+    current_step: WORKDAY_APPLY_CLICK_STEP_NAME,
+    error_code: applyClick.error_code,
+    error_message: "Apply action could not be clicked safely.",
+    readiness_score: "blocked",
     status: "manual_review_required"
   });
 }
@@ -417,6 +531,25 @@ function buildSafePageSnapshotMetadata(
     tenant_name: snapshot.tenant_name,
     timestamp: snapshot.timestamp,
     workday_base_url: snapshot.workday_base_url
+  };
+}
+
+function buildSafeApplyClickMetadata(applyClick: WorkdayApplyClickResult) {
+  return {
+    action_type: applyClick.action_type,
+    after_hostname: applyClick.after_hostname,
+    after_page_kind: applyClick.after_page_kind,
+    after_page_kind_confidence: applyClick.after_page_kind_confidence,
+    after_tenant_key: applyClick.after_tenant_key,
+    after_tenant_name: applyClick.after_tenant_name,
+    after_url: applyClick.after_url,
+    after_workday_base_url: applyClick.after_workday_base_url,
+    before_page_kind: applyClick.before_page_kind,
+    before_url: applyClick.before_url,
+    click_result: applyClick.click_result,
+    error_code: applyClick.error_code,
+    reason: applyClick.reason,
+    timestamp: applyClick.timestamp
   };
 }
 

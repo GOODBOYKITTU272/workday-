@@ -33,6 +33,31 @@ export type WorkdayLandingActionLabelCategory =
   | "none"
   | "sign_in";
 export type WorkdayLandingActionSelectorCategory = "button" | "link" | "none";
+export type WorkdayApplyClickReason =
+  | "apply_action_not_clickable"
+  | "apply_action_not_found"
+  | "apply_action_low_confidence"
+  | "click_failed"
+  | "clicked"
+  | "multiple_apply_actions"
+  | "untrusted_redirect_after_apply";
+
+export type WorkdayApplyClickResult = {
+  action_type: "apply_available";
+  after_hostname: string;
+  after_page_kind: WorkdayPageKind | "untrusted_redirect";
+  after_page_kind_confidence: WorkdayLandingPageConfidence;
+  after_tenant_key: string | null;
+  after_tenant_name: string | null;
+  after_url: string;
+  after_workday_base_url: string | null;
+  before_page_kind: WorkdayPageKind;
+  before_url: string;
+  click_result: "blocked" | "clicked" | "error";
+  error_code: null | "APPLY_ACTION_NOT_CLICKABLE" | "APPLY_ACTION_NOT_FOUND" | "APPLY_ACTION_LOW_CONFIDENCE" | "APPLY_CLICK_FAILED" | "MULTIPLE_APPLY_ACTIONS" | "UNTRUSTED_REDIRECT_AFTER_APPLY";
+  reason: WorkdayApplyClickReason;
+  timestamp: string;
+};
 
 export type WorkdayLandingPageClassification = {
   confidence: WorkdayLandingPageConfidence;
@@ -74,7 +99,7 @@ export type WorkdayPageOpenCheckResult =
       url: string;
     }
   | { ok: false; error: string; error_code: "invalid_url" | "page_open_failed" | "untrusted_host" | "unsupported_protocol"; url: string }
-  | { discovery: WorkdayLandingActionDiscovery; ok: true; snapshot: SafeWorkdayPageSnapshot; url: string };
+  | { apply_click?: WorkdayApplyClickResult; discovery: WorkdayLandingActionDiscovery; ok: true; snapshot: SafeWorkdayPageSnapshot; url: string };
 
 type WorkdayPageBlockedRedirectResult = {
   error: string;
@@ -89,7 +114,16 @@ type WorkdayPageBlockedRedirectResult = {
 
 type PageLike = {
   goto: (url: string, options?: { timeout?: number; waitUntil?: "commit" | "domcontentloaded" | "load" | "networkidle" }) => Promise<unknown>;
-  getByRole: (role: "button" | "link", options: { name: RegExp | string }) => { isVisible: () => Promise<boolean> };
+  getByRole: (
+    role: "button" | "link",
+    options: { name: RegExp | string }
+  ) => {
+    click: () => Promise<void>;
+    count: () => Promise<number>;
+    isEnabled: () => Promise<boolean>;
+    isVisible: () => Promise<boolean>;
+  };
+  waitForLoadState?: (state?: "domcontentloaded" | "load" | "networkidle", options?: { signal?: AbortSignal; timeout?: number }) => Promise<void>;
   title: () => Promise<string>;
   url: () => string;
   close: () => Promise<void>;
@@ -101,9 +135,10 @@ export async function openTrustedWorkdayJobPage(
   rawUrl: string,
   options?: {
     launcher?: BrowserLauncher;
+    allowApplyClick?: boolean;
     now?: () => string;
   }
-) {
+): Promise<WorkdayPageOpenCheckResult> {
   const parsed = validateTrustedWorkdayJobUrl(rawUrl);
 
   if (!parsed.ok) {
@@ -118,20 +153,22 @@ export async function openTrustedWorkdayJobPage(
     const created = await createBrowserContext(options?.launcher);
     browser = created.browser;
     context = created.context;
-    page = await context.newPage();
+    const openedPage = await context.newPage();
+    page = openedPage;
+    const timestamp = options?.now?.() ?? new Date().toISOString();
 
-    await page.goto(parsed.normalizedUrl, {
+    await openedPage.goto(parsed.normalizedUrl, {
       timeout: WORKDAY_OPEN_TIMEOUT_MS,
       waitUntil: "domcontentloaded"
     });
 
-    const finalValidation = validateTrustedWorkdayFinalUrl(page.url());
+    const finalValidation = validateTrustedWorkdayFinalUrl(openedPage.url());
 
     if (!finalValidation.ok) {
       return finalValidation;
     }
 
-    const snapshotOrBlocked = await captureSafePageSnapshot(page, finalValidation.detection, options?.now?.());
+    const snapshotOrBlocked = await captureSafePageSnapshot(openedPage, finalValidation.detection, options?.now?.());
 
     if (isBlockedRedirectResult(snapshotOrBlocked)) {
       return snapshotOrBlocked;
@@ -139,8 +176,22 @@ export async function openTrustedWorkdayJobPage(
 
     const snapshot = snapshotOrBlocked;
 
+    const discovery = await discoverWorkdayLandingActions(openedPage, snapshot, timestamp);
+
+    if (options?.allowApplyClick && discovery.action_type === "apply_available" && discovery.confidence === "high") {
+      const applyClickResult = await runSafeWorkdayApplyClickDryRun(openedPage, snapshot, discovery, timestamp);
+
+      return {
+        apply_click: applyClickResult.apply_click,
+        discovery: applyClickResult.discovery,
+        ok: true,
+        snapshot: applyClickResult.snapshot,
+        url: applyClickResult.snapshot.final_url
+      } satisfies WorkdayPageOpenCheckResult;
+    }
+
     return {
-      discovery: await discoverWorkdayLandingActions(page, snapshot, options?.now?.()),
+      discovery,
       ok: true,
       snapshot,
       url: snapshot.final_url
@@ -233,6 +284,13 @@ export function redactPageSnapshotForLogs(snapshot: Record<string, unknown>) {
 
 export async function runWorkdayPageOpenCheck(rawUrl: string, options?: { launcher?: BrowserLauncher }) {
   return openTrustedWorkdayJobPage(rawUrl, options);
+}
+
+export async function runWorkdayApplyClickDryRun(
+  rawUrl: string,
+  options?: { launcher?: BrowserLauncher; now?: () => string }
+): Promise<WorkdayPageOpenCheckResult> {
+  return openTrustedWorkdayJobPage(rawUrl, { ...options, allowApplyClick: true });
 }
 
 export function classifyWorkdayLandingPage(finalUrl: string, pageTitle: string | null): WorkdayLandingPageClassification {
@@ -402,6 +460,111 @@ export async function discoverWorkdayLandingActions(
   }
 }
 
+async function runSafeWorkdayApplyClickDryRun(
+  page: PageLike,
+  snapshot: SafeWorkdayPageSnapshot,
+  discovery: WorkdayLandingActionDiscovery,
+  timestamp: string
+): Promise<WorkdayApplyClickDryRunResult> {
+  const applyLocator = await findSingleSafeApplyLocator(page);
+
+  if (!applyLocator.ok) {
+    return {
+      apply_click: buildBlockedApplyClickResult(snapshot, applyLocator.reason, applyLocator.error_code, timestamp),
+      discovery,
+      snapshot
+    };
+  }
+
+  const { locator } = applyLocator;
+
+  const canVisible = await locator.isVisible().catch(() => false);
+  const canEnabled = canVisible ? await locator.isEnabled().catch(() => false) : false;
+
+  if (!canVisible || !canEnabled) {
+    return {
+      apply_click: buildBlockedApplyClickResult(
+        snapshot,
+        "apply_action_not_clickable",
+        "APPLY_ACTION_NOT_CLICKABLE",
+        timestamp
+      ),
+      discovery,
+      snapshot
+    };
+  }
+
+  try {
+    await locator.click();
+
+    if (page.waitForLoadState) {
+      await page.waitForLoadState("domcontentloaded");
+    }
+
+    const afterSnapshotOrBlocked = await captureSafePageSnapshot(page, {
+      confidence: snapshot.confidence,
+      error: undefined,
+      is_workday_url: true,
+      normalized_url: snapshot.final_url,
+      reason: "detected",
+      tenant_key: snapshot.tenant_key,
+      tenant_name: snapshot.tenant_name,
+      workday_base_url: snapshot.workday_base_url
+    });
+
+    if (isBlockedRedirectResult(afterSnapshotOrBlocked)) {
+      const blockedApplyClick: WorkdayApplyClickResult = {
+        ...buildBlockedApplyClickResult(snapshot, "untrusted_redirect_after_apply", "UNTRUSTED_REDIRECT_AFTER_APPLY", timestamp),
+        after_hostname: afterSnapshotOrBlocked.hostname,
+        after_page_kind: afterSnapshotOrBlocked.page_kind,
+        after_page_kind_confidence: "low",
+        after_tenant_key: snapshot.tenant_key,
+        after_tenant_name: snapshot.tenant_name,
+        after_url: afterSnapshotOrBlocked.final_url,
+        after_workday_base_url: snapshot.workday_base_url,
+        click_result: "blocked",
+        error_code: "UNTRUSTED_REDIRECT_AFTER_APPLY"
+      };
+
+      return {
+        apply_click: blockedApplyClick,
+        discovery,
+        snapshot
+      };
+    }
+
+    const afterSnapshot = afterSnapshotOrBlocked;
+    const afterDiscovery = await discoverWorkdayLandingActions(page, afterSnapshot, timestamp);
+
+    return {
+      apply_click: {
+        action_type: "apply_available",
+        after_hostname: afterSnapshot.hostname,
+        after_page_kind: afterSnapshot.page_kind,
+        after_page_kind_confidence: afterSnapshot.page_kind_confidence,
+        after_tenant_key: afterSnapshot.tenant_key,
+        after_tenant_name: afterSnapshot.tenant_name,
+        after_url: afterSnapshot.final_url,
+        after_workday_base_url: afterSnapshot.workday_base_url,
+        before_page_kind: snapshot.page_kind,
+        before_url: snapshot.final_url,
+        click_result: "clicked",
+        error_code: null,
+        reason: "clicked",
+        timestamp
+      },
+      discovery: afterDiscovery,
+      snapshot: afterSnapshot
+    };
+  } catch {
+    return {
+      apply_click: buildBlockedApplyClickResult(snapshot, "click_failed", "APPLY_CLICK_FAILED", timestamp),
+      discovery,
+      snapshot
+    };
+  }
+}
+
 function validateTrustedWorkdayJobUrl(
   rawUrl: string
 ):
@@ -541,6 +704,59 @@ function buildDiscovery(
     source,
     timestamp
   };
+}
+
+function buildBlockedApplyClickResult(
+  snapshot: SafeWorkdayPageSnapshot,
+  reason: Exclude<WorkdayApplyClickReason, "clicked">,
+  errorCode: NonNullable<WorkdayApplyClickResult["error_code"]>,
+  timestamp: string
+): WorkdayApplyClickResult {
+  return {
+    action_type: "apply_available",
+    after_hostname: snapshot.hostname,
+    after_page_kind: snapshot.page_kind,
+    after_page_kind_confidence: snapshot.page_kind_confidence,
+    after_tenant_key: snapshot.tenant_key,
+    after_tenant_name: snapshot.tenant_name,
+    after_url: snapshot.final_url,
+    after_workday_base_url: snapshot.workday_base_url,
+    before_page_kind: snapshot.page_kind,
+    before_url: snapshot.final_url,
+    click_result: "blocked",
+    error_code: errorCode,
+    reason,
+    timestamp
+  };
+}
+
+type SafeApplyLocatorResult =
+  | { error_code: "APPLY_ACTION_NOT_FOUND" | "MULTIPLE_APPLY_ACTIONS"; ok: false; reason: Exclude<WorkdayApplyClickReason, "apply_action_not_clickable" | "click_failed" | "clicked" | "untrusted_redirect_after_apply"> }
+  | { locator: ReturnType<PageLike["getByRole"]>; ok: true };
+
+type WorkdayApplyClickDryRunResult = {
+  apply_click: WorkdayApplyClickResult;
+  discovery: WorkdayLandingActionDiscovery;
+  snapshot: SafeWorkdayPageSnapshot;
+};
+
+async function findSingleSafeApplyLocator(page: Pick<PageLike, "getByRole">): Promise<SafeApplyLocatorResult> {
+  const pattern = /^\s*apply(?: now| for this job)?\s*$/i;
+  const buttonLocator = page.getByRole("button", { name: pattern });
+  const linkLocator = page.getByRole("link", { name: pattern });
+
+  const [buttonCount, linkCount] = await Promise.all([buttonLocator.count(), linkLocator.count()]);
+  const totalCount = buttonCount + linkCount;
+
+  if (totalCount === 0) {
+    return { error_code: "APPLY_ACTION_NOT_FOUND", ok: false, reason: "apply_action_not_found" };
+  }
+
+  if (totalCount > 1) {
+    return { error_code: "MULTIPLE_APPLY_ACTIONS", ok: false, reason: "multiple_apply_actions" };
+  }
+
+  return { locator: buttonCount === 1 ? buttonLocator : linkLocator, ok: true };
 }
 
 async function hasVisibleSignal(page: Pick<PageLike, "getByRole">, role: "button" | "link", patterns: RegExp[]) {

@@ -4,6 +4,7 @@ import {
   captureSafePageSnapshot,
   classifyWorkdayLandingPage,
   discoverWorkdayLandingActions,
+  runWorkdayApplyClickDryRun,
   redactPageSnapshotForLogs,
   runWorkdayPageOpenCheck
 } from "../src/workday-page-snapshot";
@@ -387,5 +388,56 @@ describe("workday page snapshot foundation", () => {
       timestamp: "2026-07-28T00:00:00.000Z"
     });
     expect(JSON.stringify(expected)).not.toContain("Apply now");
+  });
+
+  it("clicks one safe Apply action and stops on the next page", async () => {
+    const actions: string[] = [];
+    const launcher = {
+      launch: async () => ({
+        close: async () => undefined,
+        newContext: async () => ({
+          close: async () => undefined,
+          newPage: async () => ({
+            close: async () => undefined,
+            goto: async () => undefined,
+            getByRole: (role: "button" | "link", options: { name: RegExp | string }) => {
+              const labels = role === "button" ? ["Apply now"] : [];
+
+              return {
+                click: async () => {
+                  actions.push(`${role}:click:${typeof options.name === "string" ? options.name : options.name.toString()}`);
+                },
+                count: async () => labels.length,
+                isEnabled: async () => true,
+                isVisible: async () =>
+                  labels.some((label) => (typeof options.name === "string" ? label === options.name : options.name.test(label)))
+              };
+            },
+            title: async () => "Engineer",
+            url: () => "https://acme.wd5.myworkdayjobs.com/External/job/Engineer",
+            waitForLoadState: async () => undefined
+          })
+        })
+      })
+    };
+
+    await expect(
+      runWorkdayApplyClickDryRun(
+        "https://acme.wd5.myworkdayjobs.com/External/job/Engineer",
+        {
+          launcher,
+          now: () => "2026-07-28T00:00:00.000Z"
+        }
+      )
+    ).resolves.toMatchObject({
+      apply_click: {
+        action_type: "apply_available",
+        click_result: "clicked",
+        reason: "clicked"
+      },
+      ok: true
+    });
+
+    expect(actions).toEqual(["button:click:/^\\s*apply(?: now| for this job)?\\s*$/i"]);
   });
 });

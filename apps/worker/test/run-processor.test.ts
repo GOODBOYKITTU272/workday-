@@ -186,6 +186,72 @@ describe("application run processor", () => {
     );
   });
 
+  it("captures a safe apply click and stops for manual review when tenant matches", async () => {
+    const { automationLogs, deps, runSteps, runUpdates } = createDeps({
+      openWorkdayPage: async (): Promise<WorkdayPageOpenCheckResult> => ({
+        apply_click: {
+          action_type: "apply_available",
+          after_hostname: trustedSnapshot.hostname,
+          after_page_kind: "job_page",
+          after_page_kind_confidence: "high",
+          after_tenant_key: trustedSnapshot.tenant_key,
+          after_tenant_name: trustedSnapshot.tenant_name,
+          after_url: trustedSnapshot.final_url,
+          after_workday_base_url: trustedSnapshot.workday_base_url,
+          before_page_kind: "job_page",
+          before_url: trustedSnapshot.final_url,
+          click_result: "clicked",
+          error_code: null,
+          reason: "clicked",
+          timestamp: "2026-07-28T00:00:00.000Z"
+        },
+        discovery: {
+          action_type: "no_action_found",
+          confidence: "medium",
+          safe_label_category: "none",
+          selector_category: "none",
+          source: "url",
+          timestamp: "2026-07-28T00:00:00.000Z"
+        },
+        ok: true,
+        snapshot: trustedSnapshot,
+        url: trustedSnapshot.final_url
+      })
+    });
+
+    await expect(processOneApplicationRun(deps)).resolves.toEqual({
+      runId: "run-id",
+      status: "apply_click_complete"
+    });
+
+    expect(runSteps[0]).toEqual(
+      expect.objectContaining({
+        message: "Workday Apply action clicked and safe snapshot captured. Worker stops before login or question extraction.",
+        metadata: expect.objectContaining({
+          apply_click: expect.objectContaining({
+            action_type: "apply_available",
+            click_result: "clicked",
+            reason: "clicked"
+          }),
+          final_tenant_key: "acme",
+          tenant_match: true
+        }),
+        step_name: "workday_apply_click",
+        step_status: "success"
+      })
+    );
+    expect(runUpdates[0]).toEqual(
+      expect.objectContaining({
+        current_step: "workday_apply_click",
+        readiness_score: "needs_review",
+        status: "manual_review_required"
+      })
+    );
+    expect(JSON.stringify({ automationLogs, runSteps, runUpdates })).not.toMatch(
+      /approved_for_submit|submitted_at|access_token|refresh_token|password|otp|Apply now|Sign In|Create Account/i
+    );
+  });
+
   it("stops safely when the detected tenant does not match the expected tenant", async () => {
     const { automationLogs, deps, runSteps, runUpdates } = createDeps({
       openWorkdayPage: async (jobUrl): Promise<WorkdayPageOpenCheckResult> => ({

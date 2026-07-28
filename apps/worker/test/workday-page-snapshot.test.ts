@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   captureSafePageSnapshot,
+  buildPostApplyDecisionRoute,
   classifyWorkdayLandingPage,
   classifyPostApplyLandingState,
   discoverWorkdayLandingActions,
@@ -571,6 +572,38 @@ describe("workday page snapshot foundation", () => {
     });
   });
 
+  it("classifies a post-Apply job-unavailable page as job_unavailable", () => {
+    expect(
+      classifyPostApplyLandingState(
+        {
+          confidence: "high",
+          final_url: "https://acme.wd5.myworkdayjobs.com/unavailable",
+          hostname: "acme.wd5.myworkdayjobs.com",
+          load_status: "loaded",
+          page_kind_confidence: "high",
+          page_kind: "unavailable_page",
+          page_title: "Job Unavailable",
+          tenant_key: "acme",
+          tenant_name: "acme",
+          timestamp: "2026-07-28T00:00:00.000Z",
+          workday_base_url: "https://acme.wd5.myworkdayjobs.com"
+        },
+        {
+          action_type: "job_unavailable",
+          confidence: "high",
+          safe_label_category: "job_unavailable",
+          selector_category: "button",
+          source: "selector_signal",
+          timestamp: "2026-07-28T00:00:00.000Z"
+        }
+      )
+    ).toEqual({
+      confidence: "high",
+      post_apply_reason: "job_unavailable_signal",
+      post_apply_state: "job_unavailable"
+    });
+  });
+
   it("classifies a post-Apply untrusted redirect safely", () => {
     expect(
       classifyPostApplyLandingState(
@@ -617,6 +650,67 @@ describe("workday page snapshot foundation", () => {
       post_apply_reason: "untrusted_redirect_after_apply",
       post_apply_state: "untrusted_redirect"
     });
+  });
+
+  it("routes an unknown post-Apply page to manual review", () => {
+    expect(
+      buildPostApplyDecisionRoute({
+        confidence: "low",
+        post_apply_reason: "no_signal",
+        post_apply_state: "unknown"
+      })
+    ).toEqual(
+      expect.objectContaining({
+        execution_allowed: false,
+        post_apply_state: "unknown",
+        recommended_next_route: "unknown_manual_review",
+        requires_human_review: true,
+        route_reason: "low_or_unknown_confidence"
+      })
+    );
+  });
+
+  it.each([
+    [
+      "login_required",
+      { confidence: "high" as const, post_apply_reason: "login_signal" as const, post_apply_state: "login_required" as const },
+      "route_to_login_flow"
+    ],
+    [
+      "create_account_required",
+      {
+        confidence: "medium" as const,
+        post_apply_reason: "create_account_signal" as const,
+        post_apply_state: "create_account_required" as const
+      },
+      "route_to_create_account_flow"
+    ],
+    [
+      "application_started",
+      {
+        confidence: "high" as const,
+        post_apply_reason: "application_started_signal" as const,
+        post_apply_state: "application_started" as const
+      },
+      "route_to_questionnaire_discovery"
+    ],
+    [
+      "job_unavailable",
+      {
+        confidence: "high" as const,
+        post_apply_reason: "job_unavailable_signal" as const,
+        post_apply_state: "job_unavailable" as const
+      },
+      "stop_job_unavailable"
+    ]
+  ])("routes %s deterministically", (_label, classification, recommendedRoute) => {
+    expect(buildPostApplyDecisionRoute(classification)).toEqual(
+      expect.objectContaining({
+        execution_allowed: false,
+        recommended_next_route: recommendedRoute,
+        requires_human_review: true
+      })
+    );
   });
 
   it("blocks Apply clicks when the expected tenant does not match the detected tenant", async () => {

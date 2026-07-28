@@ -238,6 +238,12 @@ describe("application run processor", () => {
             post_apply_reason: "no_signal",
             post_apply_state: "unknown"
           }),
+          post_apply_decision: expect.objectContaining({
+            execution_allowed: false,
+            recommended_next_route: "unknown_manual_review",
+            requires_human_review: true,
+            route_reason: "low_or_unknown_confidence"
+          }),
           tenant_match: true
         }),
         step_name: "workday_apply_click",

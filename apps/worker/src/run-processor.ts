@@ -3,6 +3,7 @@ import { type WorkerRunReadinessInput, validateWorkerRunReadiness } from "./queu
 import {
   type SafeWorkdayPageSnapshot,
   type WorkdayApplyClickResult,
+  buildPostApplyDecisionRoute,
   type WorkdayLandingActionDiscovery,
   type WorkdayPageOpenCheckResult,
   classifyPostApplyLandingState,
@@ -318,10 +319,13 @@ async function finishApplyClickSuccess(
   expectedTenantKey: string | null,
   finalTenantKey: string | null
 ) {
+  const postApplyState = classifyPostApplyLandingState(snapshot, discovery, applyClick);
+  const postApplyDecision = buildPostApplyDecisionRoute(postApplyState);
   const metadata = {
     ...buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
     apply_click: buildSafeApplyClickMetadata(applyClick),
-    post_apply_state: buildSafePostApplyStateMetadata(classifyPostApplyLandingState(snapshot, discovery, applyClick)),
+    post_apply_decision: buildSafePostApplyDecisionMetadata(postApplyDecision),
+    post_apply_state: buildSafePostApplyStateMetadata(postApplyState),
     landing_action: discovery
   };
   const completedAt = getNow(deps);
@@ -362,10 +366,13 @@ async function finishApplyClickBlocked(
   expectedTenantKey: string | null,
   finalTenantKey: string | null
 ) {
+  const postApplyState = classifyPostApplyLandingState(snapshot, discovery, applyClick);
+  const postApplyDecision = buildPostApplyDecisionRoute(postApplyState);
   const metadata = {
     ...buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
     apply_click: buildSafeApplyClickMetadata(applyClick),
-    post_apply_state: buildSafePostApplyStateMetadata(classifyPostApplyLandingState(snapshot, discovery, applyClick)),
+    post_apply_decision: buildSafePostApplyDecisionMetadata(postApplyDecision),
+    post_apply_state: buildSafePostApplyStateMetadata(postApplyState),
     landing_action: discovery
   };
   const completedAt = getNow(deps);
@@ -563,6 +570,22 @@ function buildSafePostApplyStateMetadata(
     confidence: postApplyState.confidence,
     post_apply_reason: postApplyState.post_apply_reason,
     post_apply_state: postApplyState.post_apply_state
+  };
+}
+
+function buildSafePostApplyDecisionMetadata(
+  postApplyDecision: ReturnType<typeof buildPostApplyDecisionRoute>
+) {
+  return {
+    execution_allowed: postApplyDecision.execution_allowed,
+    post_apply_reason: postApplyDecision.post_apply_reason,
+    post_apply_state: postApplyDecision.post_apply_state,
+    post_apply_state_confidence: postApplyDecision.post_apply_state_confidence,
+    recommended_next_route: postApplyDecision.recommended_next_route,
+    requires_human_review: postApplyDecision.requires_human_review,
+    route_confidence: postApplyDecision.route_confidence,
+    route_reason: postApplyDecision.route_reason,
+    timestamp: postApplyDecision.timestamp
   };
 }
 

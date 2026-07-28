@@ -112,6 +112,36 @@ export type PostApplyLandingStateClassification = {
   post_apply_reason: PostApplyLandingStateReason;
   post_apply_state: PostApplyLandingState;
 };
+export type PostApplyDecisionRoute =
+  | "route_to_create_account_flow"
+  | "route_to_login_flow"
+  | "route_to_manual_review"
+  | "route_to_questionnaire_discovery"
+  | "stop_already_applied"
+  | "stop_job_unavailable"
+  | "stop_tenant_mismatch"
+  | "stop_untrusted_redirect"
+  | "unknown_manual_review";
+export type PostApplyDecisionReason =
+  | "application_started_high_confidence"
+  | "already_applied_signal"
+  | "create_account_signal"
+  | "job_unavailable_signal"
+  | "login_signal"
+  | "low_or_unknown_confidence"
+  | "tenant_mismatch_signal"
+  | "untrusted_redirect_signal";
+export type PostApplyDecisionClassification = {
+  execution_allowed: false;
+  post_apply_reason: PostApplyLandingStateReason;
+  post_apply_state: PostApplyLandingState;
+  post_apply_state_confidence: PostApplyLandingStateConfidence;
+  recommended_next_route: PostApplyDecisionRoute;
+  requires_human_review: true;
+  route_confidence: WorkdayLandingPageConfidence;
+  route_reason: PostApplyDecisionReason;
+  timestamp: string;
+};
 
 export type SafeWorkdayPageSnapshot = {
   confidence: WorkdayTenantDetectionResult["confidence"];
@@ -510,9 +540,70 @@ export function classifyPostApplyLandingState(
   }
 
   return {
-    confidence: snapshot.page_kind_confidence === "high" ? "low" : "low",
+    confidence: "low",
     post_apply_reason: "no_signal",
     post_apply_state: "unknown"
+  };
+}
+
+export function buildPostApplyDecisionRoute(
+  classification: PostApplyLandingStateClassification
+): PostApplyDecisionClassification {
+  switch (classification.post_apply_state) {
+    case "tenant_mismatch":
+      return buildDecision("stop_tenant_mismatch", "tenant_mismatch_signal", classification.confidence, classification);
+    case "untrusted_redirect":
+      return buildDecision("stop_untrusted_redirect", "untrusted_redirect_signal", classification.confidence, classification);
+    case "already_applied":
+      return buildDecision("stop_already_applied", "already_applied_signal", classification.confidence, classification);
+    case "job_unavailable":
+      return buildDecision("stop_job_unavailable", "job_unavailable_signal", classification.confidence, classification);
+    case "login_required":
+      return buildDecision(
+        classification.confidence === "high" || classification.confidence === "medium"
+          ? "route_to_login_flow"
+          : "route_to_manual_review",
+        "login_signal",
+        classification.confidence,
+        classification
+      );
+    case "create_account_required":
+      return buildDecision(
+        classification.confidence === "high" || classification.confidence === "medium"
+          ? "route_to_create_account_flow"
+          : "route_to_manual_review",
+        "create_account_signal",
+        classification.confidence,
+        classification
+      );
+    case "application_started":
+      return buildDecision(
+        classification.confidence === "high" ? "route_to_questionnaire_discovery" : "unknown_manual_review",
+        "application_started_high_confidence",
+        classification.confidence,
+        classification
+      );
+    default:
+      return buildDecision("unknown_manual_review", "low_or_unknown_confidence", classification.confidence, classification);
+  }
+}
+
+function buildDecision(
+  recommendedNextRoute: PostApplyDecisionRoute,
+  routeReason: PostApplyDecisionReason,
+  routeConfidence: WorkdayLandingPageConfidence,
+  classification: PostApplyLandingStateClassification
+): PostApplyDecisionClassification {
+  return {
+    execution_allowed: false,
+    post_apply_reason: classification.post_apply_reason,
+    post_apply_state: classification.post_apply_state,
+    post_apply_state_confidence: classification.confidence,
+    recommended_next_route: recommendedNextRoute,
+    requires_human_review: true,
+    route_confidence: routeConfidence,
+    route_reason: routeReason,
+    timestamp: new Date().toISOString()
   };
 }
 

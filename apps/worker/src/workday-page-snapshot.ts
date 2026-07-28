@@ -5,14 +5,7 @@ import { decryptWorkdayPassword } from "./workday-password.js";
 
 type BrowserLauncher = Parameters<typeof createBrowserContext>[0];
 
-export type WorkdayPageKind =
-  | "already_signed_in_page"
-  | "create_account_page"
-  | "error_page"
-  | "job_page"
-  | "sign_in_page"
-  | "unavailable_page"
-  | "unknown";
+export type WorkdayPageKind = "already_signed_in_page" | "create_account_page" | "error_page" | "job_page" | "sign_in_page" | "unavailable_page" | "unknown";
 export type WorkdayPageLoadStatus = "error" | "loaded";
 export type WorkdayLandingPageConfidence = "high" | "low" | "medium";
 export type WorkdayLandingActionType =
@@ -25,14 +18,7 @@ export type WorkdayLandingActionType =
   | "sign_in_available"
   | "unknown";
 export type WorkdayLandingActionSource = "selector_signal" | "title" | "url";
-export type WorkdayLandingActionLabelCategory =
-  | "already_applied"
-  | "already_signed_in"
-  | "apply"
-  | "create_account"
-  | "job_unavailable"
-  | "none"
-  | "sign_in";
+export type WorkdayLandingActionLabelCategory = "already_applied" | "already_signed_in" | "apply" | "create_account" | "job_unavailable" | "none" | "sign_in";
 export type WorkdayLandingActionSelectorCategory = "button" | "link" | "none";
 export type WorkdayApplyClickReason =
   | "apply_action_not_clickable"
@@ -181,8 +167,7 @@ export type WorkdayLoginPageInspectionBlockedReason =
   | "untrusted_redirect";
 
 export type WorkdayLoginPageInspectionResult =
-  | ({ ok: true } & WorkdayLoginPageInspectionSignals)
-  | { blockedReason: WorkdayLoginPageInspectionBlockedReason; ok: false };
+  ({ ok: true } & WorkdayLoginPageInspectionSignals) | { blockedReason: WorkdayLoginPageInspectionBlockedReason; ok: false };
 
 export type WorkdayLoginAttemptCredentials = {
   email: string;
@@ -226,6 +211,26 @@ export type WorkdayLoginAttemptResult =
     }
   | { blockedReason: WorkdayLoginAttemptBlockedReason; ok: false };
 
+export type WorkdayPostLoginDecisionRoute =
+  | "route_to_otp_manual_review"
+  | "route_to_questionnaire_discovery_later"
+  | "route_to_verification_manual_review"
+  | "still_on_login_manual_review"
+  | "stop_account_locked_manual_review"
+  | "stop_invalid_credentials_manual_review"
+  | "unknown_post_login_manual_review";
+
+export type WorkdayPostLoginDecisionClassification = {
+  confidence: WorkdayLoginPageInspectionConfidence;
+  execution_allowed: false;
+  hostname: string;
+  post_login_route: WorkdayPostLoginDecisionRoute;
+  post_login_state: WorkdayPostLoginState;
+  requires_human_review: true;
+  tenant_key: string | null;
+  timestamp: string;
+};
+
 export type WorkdayPageOpenCheckResult =
   | {
       error: string;
@@ -237,8 +242,19 @@ export type WorkdayPageOpenCheckResult =
       page_kind: "untrusted_redirect";
       url: string;
     }
-  | { ok: false; error: string; error_code: "invalid_url" | "page_open_failed" | "untrusted_host" | "unsupported_protocol"; url: string }
-  | { apply_click?: WorkdayApplyClickResult; discovery: WorkdayLandingActionDiscovery; ok: true; snapshot: SafeWorkdayPageSnapshot; url: string };
+  | {
+      ok: false;
+      error: string;
+      error_code: "invalid_url" | "page_open_failed" | "untrusted_host" | "unsupported_protocol";
+      url: string;
+    }
+  | {
+      apply_click?: WorkdayApplyClickResult;
+      discovery: WorkdayLandingActionDiscovery;
+      ok: true;
+      snapshot: SafeWorkdayPageSnapshot;
+      url: string;
+    };
 
 type WorkdayPageBlockedRedirectResult = {
   error: string;
@@ -252,7 +268,13 @@ type WorkdayPageBlockedRedirectResult = {
 };
 
 type PageLike = {
-  goto: (url: string, options?: { timeout?: number; waitUntil?: "commit" | "domcontentloaded" | "load" | "networkidle" }) => Promise<unknown>;
+  goto: (
+    url: string,
+    options?: {
+      timeout?: number;
+      waitUntil?: "commit" | "domcontentloaded" | "load" | "networkidle";
+    }
+  ) => Promise<unknown>;
   getByRole: (
     role: "alert" | "button" | "link",
     options?: { name: RegExp | string }
@@ -264,7 +286,10 @@ type PageLike = {
   };
   // .count() for structural presence checks; .fill() is only ever called on the
   // single, already-guard-confirmed email/password field during a login attempt.
-  locator: (selector: string) => { count: () => Promise<number>; fill: (value: string) => Promise<void> };
+  locator: (selector: string) => {
+    count: () => Promise<number>;
+    fill: (value: string) => Promise<void>;
+  };
   waitForLoadState?: (state?: "domcontentloaded" | "load" | "networkidle", options?: { signal?: AbortSignal; timeout?: number }) => Promise<void>;
   title: () => Promise<string>;
   url: () => string;
@@ -329,12 +354,7 @@ export async function openTrustedWorkdayJobPage(
 
       if (!expectedTenantKey) {
         return {
-          apply_click: buildBlockedApplyClickResult(
-            snapshot,
-            "expected_tenant_missing",
-            "EXPECTED_TENANT_MISSING",
-            timestamp
-          ),
+          apply_click: buildBlockedApplyClickResult(snapshot, "expected_tenant_missing", "EXPECTED_TENANT_MISSING", timestamp),
           discovery,
           ok: true,
           snapshot,
@@ -362,13 +382,7 @@ export async function openTrustedWorkdayJobPage(
         } satisfies WorkdayPageOpenCheckResult;
       }
 
-      const applyClickResult = await runSafeWorkdayApplyClickDryRun(
-        openedPage,
-        snapshot,
-        discovery,
-        timestamp,
-        expectedTenantKey
-      );
+      const applyClickResult = await runSafeWorkdayApplyClickDryRun(openedPage, snapshot, discovery, timestamp, expectedTenantKey);
 
       return {
         apply_click: applyClickResult.apply_click,
@@ -794,9 +808,7 @@ export function classifyPostApplyLandingState(
 
   if (
     snapshot.page_kind === "job_page" &&
-    /application|questionnaire|assessment|application started|continue application|start application|begin application|application form/.test(
-      urlTitleText
-    )
+    /application|questionnaire|assessment|application started|continue application|start application|begin application|application form/.test(urlTitleText)
   ) {
     return {
       confidence: "high",
@@ -812,9 +824,7 @@ export function classifyPostApplyLandingState(
   };
 }
 
-export function buildPostApplyDecisionRoute(
-  classification: PostApplyLandingStateClassification
-): PostApplyDecisionClassification {
+export function buildPostApplyDecisionRoute(classification: PostApplyLandingStateClassification): PostApplyDecisionClassification {
   switch (classification.post_apply_state) {
     case "tenant_mismatch":
       return buildDecision("stop_tenant_mismatch", "tenant_mismatch_signal", classification.confidence, classification);
@@ -826,18 +836,14 @@ export function buildPostApplyDecisionRoute(
       return buildDecision("stop_job_unavailable", "job_unavailable_signal", classification.confidence, classification);
     case "login_required":
       return buildDecision(
-        classification.confidence === "high" || classification.confidence === "medium"
-          ? "route_to_login_flow"
-          : "route_to_manual_review",
+        classification.confidence === "high" || classification.confidence === "medium" ? "route_to_login_flow" : "route_to_manual_review",
         "login_signal",
         classification.confidence,
         classification
       );
     case "create_account_required":
       return buildDecision(
-        classification.confidence === "high" || classification.confidence === "medium"
-          ? "route_to_create_account_flow"
-          : "route_to_manual_review",
+        classification.confidence === "high" || classification.confidence === "medium" ? "route_to_create_account_flow" : "route_to_manual_review",
         "create_account_signal",
         classification.confidence,
         classification
@@ -852,6 +858,29 @@ export function buildPostApplyDecisionRoute(
     default:
       return buildDecision("unknown_manual_review", "low_or_unknown_confidence", classification.confidence, classification);
   }
+}
+
+export function buildPostLoginDecisionRoute(loginAttempt: Extract<WorkdayLoginAttemptResult, { ok: true }>): WorkdayPostLoginDecisionClassification {
+  const routes: Record<WorkdayPostLoginState, WorkdayPostLoginDecisionRoute> = {
+    account_locked_possible: "stop_account_locked_manual_review",
+    invalid_credentials_possible: "stop_invalid_credentials_manual_review",
+    login_success_possible: "route_to_questionnaire_discovery_later",
+    otp_required: "route_to_otp_manual_review",
+    still_on_login_page: "still_on_login_manual_review",
+    unknown: "unknown_post_login_manual_review",
+    verification_required: "route_to_verification_manual_review"
+  };
+
+  return {
+    confidence: loginAttempt.confidence,
+    execution_allowed: false,
+    hostname: loginAttempt.hostname,
+    post_login_route: routes[loginAttempt.post_login_state],
+    post_login_state: loginAttempt.post_login_state,
+    requires_human_review: true,
+    tenant_key: loginAttempt.tenant_key,
+    timestamp: loginAttempt.timestamp
+  };
 }
 
 function buildDecision(
@@ -1001,12 +1030,7 @@ async function runSafeWorkdayApplyClickDryRun(
 
   if (!canVisible || !canEnabled) {
     return {
-      apply_click: buildBlockedApplyClickResult(
-        snapshot,
-        "apply_action_not_clickable",
-        "APPLY_ACTION_NOT_CLICKABLE",
-        timestamp
-      ),
+      apply_click: buildBlockedApplyClickResult(snapshot, "apply_action_not_clickable", "APPLY_ACTION_NOT_CLICKABLE", timestamp),
       discovery,
       snapshot
     };
@@ -1019,12 +1043,12 @@ async function runSafeWorkdayApplyClickDryRun(
       await page.waitForLoadState("domcontentloaded");
     }
 
-      const afterSnapshotOrBlocked = await captureSafePageSnapshot(page, {
-        confidence: snapshot.confidence,
-        error: undefined,
-        is_workday_url: true,
-        normalized_url: snapshot.final_url,
-        reason: "detected",
+    const afterSnapshotOrBlocked = await captureSafePageSnapshot(page, {
+      confidence: snapshot.confidence,
+      error: undefined,
+      is_workday_url: true,
+      normalized_url: snapshot.final_url,
+      reason: "detected",
       tenant_key: snapshot.tenant_key,
       tenant_name: snapshot.tenant_name,
       workday_base_url: snapshot.workday_base_url
@@ -1123,11 +1147,14 @@ async function runSafeWorkdayApplyClickDryRun(
   }
 }
 
-function validateTrustedWorkdayJobUrl(
-  rawUrl: string
-):
+function validateTrustedWorkdayJobUrl(rawUrl: string):
   | { detection: WorkdayTenantDetectionResult; normalizedUrl: string; ok: true; url: string }
-  | { error: string; error_code: "invalid_url" | "untrusted_host" | "unsupported_protocol"; ok: false; url: string } {
+  | {
+      error: string;
+      error_code: "invalid_url" | "untrusted_host" | "unsupported_protocol";
+      ok: false;
+      url: string;
+    } {
   const trimmedUrl = rawUrl.trim();
 
   let parsedUrl: URL;
@@ -1171,9 +1198,7 @@ function validateTrustedWorkdayJobUrl(
   };
 }
 
-function validateTrustedWorkdayFinalUrl(
-  rawUrl: string
-):
+function validateTrustedWorkdayFinalUrl(rawUrl: string):
   | { detection: WorkdayTenantDetectionResult; ok: true; normalizedUrl: string; url: string }
   | {
       error: string;
@@ -1217,7 +1242,10 @@ function validateTrustedWorkdayFinalUrl(
   };
 }
 
-function blockedRedirect(finalUrl: string, error: string): {
+function blockedRedirect(
+  finalUrl: string,
+  error: string
+): {
   error: string;
   error_code: "UNTRUSTED_REDIRECT";
   final_url: string;
@@ -1289,7 +1317,11 @@ function buildBlockedApplyClickResult(
 }
 
 type SafeApplyLocatorResult =
-  | { error_code: "APPLY_ACTION_NOT_FOUND" | "MULTIPLE_APPLY_ACTIONS"; ok: false; reason: Exclude<WorkdayApplyClickReason, "apply_action_not_clickable" | "click_failed" | "clicked" | "untrusted_redirect_after_apply"> }
+  | {
+      error_code: "APPLY_ACTION_NOT_FOUND" | "MULTIPLE_APPLY_ACTIONS";
+      ok: false;
+      reason: Exclude<WorkdayApplyClickReason, "apply_action_not_clickable" | "click_failed" | "clicked" | "untrusted_redirect_after_apply">;
+    }
   | { locator: ReturnType<PageLike["getByRole"]>; ok: true };
 
 type WorkdayApplyClickDryRunResult = {
@@ -1335,8 +1367,16 @@ async function inspectSafeLoginPageSignals(
   page: Pick<PageLike, "getByRole" | "locator">,
   timestamp: string
 ): Promise<{ ok: true } & WorkdayLoginPageInspectionSignals> {
-  const passwordFieldCandidateDetected = (await page.locator(PASSWORD_FIELD_SELECTOR).count().catch(() => 0)) > 0;
-  const emailFieldCandidateDetected = (await page.locator(EMAIL_FIELD_SELECTOR).count().catch(() => 0)) > 0;
+  const passwordFieldCandidateDetected =
+    (await page
+      .locator(PASSWORD_FIELD_SELECTOR)
+      .count()
+      .catch(() => 0)) > 0;
+  const emailFieldCandidateDetected =
+    (await page
+      .locator(EMAIL_FIELD_SELECTOR)
+      .count()
+      .catch(() => 0)) > 0;
   const signInActionCandidateDetected = await hasVisibleSignal(page, "button", [/\bsign in\b/i, /\bsign on\b/i, /\blog in\b/i, /\blogin\b/i]);
 
   let confidence: WorkdayLoginPageInspectionConfidence = "unknown";
@@ -1445,9 +1485,7 @@ async function classifyPostLoginAttempt(
   };
 }
 
-function isBlockedRedirectResult(
-  result: SafeWorkdayPageSnapshot | WorkdayPageBlockedRedirectResult
-): result is WorkdayPageBlockedRedirectResult {
+function isBlockedRedirectResult(result: SafeWorkdayPageSnapshot | WorkdayPageBlockedRedirectResult): result is WorkdayPageBlockedRedirectResult {
   return "ok" in result && result.ok === false && result.error_code === "UNTRUSTED_REDIRECT";
 }
 

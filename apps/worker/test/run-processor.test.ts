@@ -597,7 +597,7 @@ describe("application run processor", () => {
 
   it.each([
     [
-      "route_to_login_flow",
+      "route_to_questionnaire_discovery_later",
       {
         action_type: "sign_in_available" as const,
         confidence: "high" as const,
@@ -772,15 +772,26 @@ describe("application run processor", () => {
 
     it("creates a route_to_login_flow item with no error_code when the account is ready", async () => {
       const { manualReviewItems, runSteps, runUpdates } = await runLoginRouteScenario({
-        checkWorkdayLoginReadiness: async () => ({ ok: true })
+        checkWorkdayLoginReadiness: async () => ({ ok: true }),
+        inspectWorkdayLoginPage: async () => ({
+          confidence: "unknown",
+          email_field_candidate_detected: false,
+          login_page_detected: false,
+          ok: true,
+          password_field_candidate_detected: false,
+          sign_in_action_candidate_detected: false,
+          timestamp: "2026-07-28T00:00:00.000Z"
+        })
       });
 
       expect(manualReviewItems).toEqual([
-        expect.objectContaining({ error_code: null, item_type: "routing_review", review_reason: "route_to_login_flow" })
+        expect.objectContaining({
+          error_code: null,
+          item_type: "routing_review",
+          review_reason: "route_to_login_flow"
+        })
       ]);
-      expect(runSteps[0]?.metadata).toEqual(
-        expect.objectContaining({ login_readiness: { blocked_reason: null, ok: true } })
-      );
+      expect(runSteps[0]?.metadata).toEqual(expect.objectContaining({ login_readiness: { blocked_reason: null, ok: true } }));
       expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
     });
 
@@ -796,7 +807,10 @@ describe("application run processor", () => {
       });
 
       expect(manualReviewItems).toEqual([
-        expect.objectContaining({ error_code: expectedErrorCode, review_reason: "route_to_login_flow" })
+        expect.objectContaining({
+          error_code: expectedErrorCode,
+          review_reason: "route_to_login_flow"
+        })
       ]);
       expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
     });
@@ -809,7 +823,9 @@ describe("application run processor", () => {
       });
 
       expect(runSteps[0]?.metadata).toEqual(
-        expect.objectContaining({ login_readiness: { blocked_reason: "readiness_check_failed", ok: false } })
+        expect.objectContaining({
+          login_readiness: { blocked_reason: "readiness_check_failed", ok: false }
+        })
       );
       expect(manualReviewItems).toEqual([expect.objectContaining({ error_code: "WORKDAY_LOGIN_READINESS_CHECK_FAILED" })]);
       expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
@@ -818,7 +834,10 @@ describe("application run processor", () => {
 
     it("never includes account_status, email, or password fields in run_steps, automation_logs, or manual_review_items", async () => {
       const { automationLogs, manualReviewItems, runSteps } = await runLoginRouteScenario({
-        checkWorkdayLoginReadiness: async () => ({ blockedReason: "password_decrypt_failed", ok: false })
+        checkWorkdayLoginReadiness: async () => ({
+          blockedReason: "password_decrypt_failed",
+          ok: false
+        })
       });
 
       const writes = JSON.stringify({ automationLogs, manualReviewItems, runSteps });
@@ -829,7 +848,10 @@ describe("application run processor", () => {
     async function runLoginRouteScenario(overrides: Partial<RunProcessorDeps>) {
       const { automationLogs, deps, manualReviewItems, runSteps, runUpdates } = createLoginRouteDeps(overrides);
 
-      await expect(processOneApplicationRun(deps)).resolves.toEqual({ runId: "run-id", status: "snapshot_complete" });
+      await expect(processOneApplicationRun(deps)).resolves.toEqual({
+        runId: "run-id",
+        status: "snapshot_complete"
+      });
 
       return { automationLogs, manualReviewItems, runSteps, runUpdates };
     }
@@ -945,28 +967,31 @@ describe("application run processor", () => {
 
       expect(runSteps[0]?.metadata).toEqual(
         expect.objectContaining({
-          login_page_inspection: expect.objectContaining({ confidence: "unknown", login_page_detected: false, ok: true })
+          login_page_inspection: expect.objectContaining({
+            confidence: "unknown",
+            login_page_detected: false,
+            ok: true
+          })
         })
       );
       expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
     });
 
-    it.each([
-      "expected_tenant_missing",
-      "tenant_mismatch_before_open",
-      "untrusted_redirect",
-      "tenant_mismatch_after_open",
-      "final_tenant_missing"
-    ] as const)("keeps the run manual_review_required and records the block reason for %s", async (blockedReason) => {
-      const { runSteps, runUpdates } = await runLoginPageInspectionScenario({
-        inspectWorkdayLoginPage: async () => ({ blockedReason, ok: false })
-      });
+    it.each(["expected_tenant_missing", "tenant_mismatch_before_open", "untrusted_redirect", "tenant_mismatch_after_open", "final_tenant_missing"] as const)(
+      "keeps the run manual_review_required and records the block reason for %s",
+      async (blockedReason) => {
+        const { runSteps, runUpdates } = await runLoginPageInspectionScenario({
+          inspectWorkdayLoginPage: async () => ({ blockedReason, ok: false })
+        });
 
-      expect(runSteps[0]?.metadata).toEqual(
-        expect.objectContaining({ login_page_inspection: { blocked_reason: blockedReason, ok: false } })
-      );
-      expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
-    });
+        expect(runSteps[0]?.metadata).toEqual(
+          expect.objectContaining({
+            login_page_inspection: { blocked_reason: blockedReason, ok: false }
+          })
+        );
+        expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+      }
+    );
 
     it("keeps the run manual_review_required and logs nothing sensitive when the inspection itself throws", async () => {
       const { automationLogs, manualReviewItems, runSteps, runUpdates } = await runLoginPageInspectionScenario({
@@ -976,7 +1001,9 @@ describe("application run processor", () => {
       });
 
       expect(runSteps[0]?.metadata).toEqual(
-        expect.objectContaining({ login_page_inspection: { blocked_reason: "inspection_failed", ok: false } })
+        expect.objectContaining({
+          login_page_inspection: { blocked_reason: "inspection_failed", ok: false }
+        })
       );
       expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
       expect(JSON.stringify({ automationLogs, manualReviewItems, runSteps })).not.toContain("leaked-inspection-secret");
@@ -1003,7 +1030,10 @@ describe("application run processor", () => {
     async function runLoginPageInspectionScenario(overrides: Partial<RunProcessorDeps>) {
       const { automationLogs, deps, manualReviewItems, runSteps, runUpdates } = createLoginRouteDeps(overrides);
 
-      await expect(processOneApplicationRun(deps)).resolves.toEqual({ runId: "run-id", status: "snapshot_complete" });
+      await expect(processOneApplicationRun(deps)).resolves.toEqual({
+        runId: "run-id",
+        status: "snapshot_complete"
+      });
 
       return { automationLogs, manualReviewItems, runSteps, runUpdates };
     }
@@ -1032,7 +1062,10 @@ describe("application run processor", () => {
     async function runLoginAttemptScenario(overrides: Partial<RunProcessorDeps>) {
       const { automationLogs, deps, manualReviewItems, runSteps, runUpdates } = createReadyLoginRouteDeps(overrides);
 
-      await expect(processOneApplicationRun(deps)).resolves.toEqual({ runId: "run-id", status: "snapshot_complete" });
+      await expect(processOneApplicationRun(deps)).resolves.toEqual({
+        runId: "run-id",
+        status: "snapshot_complete"
+      });
 
       return { automationLogs, manualReviewItems, runSteps, runUpdates };
     }
@@ -1121,8 +1154,8 @@ describe("application run processor", () => {
       expect(callCount).toBe(0);
     });
 
-    it("records safe metadata and no error_code for a possible login success", async () => {
-      const { manualReviewItems, runSteps, runUpdates } = await runLoginAttemptScenario({});
+    it("routes a possible login success to later questionnaire discovery with fixed safe metadata", async () => {
+      const { automationLogs, manualReviewItems, runSteps, runUpdates } = await runLoginAttemptScenario({});
 
       expect(runSteps[0]?.metadata).toEqual(
         expect.objectContaining({
@@ -1133,33 +1166,77 @@ describe("application run processor", () => {
             ok: true,
             post_login_state: "login_success_possible",
             tenant_key: "acme"
+          },
+          post_login_decision: {
+            confidence: "medium",
+            execution_allowed: false,
+            hostname: "acme.wd5.myworkdayjobs.com",
+            post_login_route: "route_to_questionnaire_discovery_later",
+            post_login_state: "login_success_possible",
+            requires_human_review: true,
+            tenant_key: "acme",
+            timestamp: "2026-07-28T00:00:00.000Z"
           }
         })
       );
-      expect(manualReviewItems).toEqual([expect.objectContaining({ error_code: null, review_reason: "route_to_login_flow" })]);
+      expect(automationLogs[0]?.context).toEqual(
+        expect.objectContaining({
+          post_login_decision: expect.objectContaining({
+            execution_allowed: false,
+            post_login_route: "route_to_questionnaire_discovery_later",
+            requires_human_review: true
+          })
+        })
+      );
+      expect(manualReviewItems).toEqual([
+        expect.objectContaining({
+          error_code: "WORKDAY_POST_LOGIN_ROUTE_REVIEW_REQUIRED",
+          hostname: "acme.wd5.myworkdayjobs.com",
+          post_login_route: "route_to_questionnaire_discovery_later",
+          post_login_state: "login_success_possible",
+          review_reason: "route_to_questionnaire_discovery_later",
+          risk_level: "medium",
+          tenant_key: "acme"
+        })
+      ]);
       expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+      expect(JSON.stringify({ automationLogs, manualReviewItems, runSteps })).not.toMatch(
+        /candidate@example\.com|super-secret-password|otp code|access_token|verification link|leaked-login-secret/i
+      );
     });
 
-    it.each(["otp_required", "verification_required", "invalid_credentials_possible", "account_locked_possible", "still_on_login_page"] as const)(
-      "records %s safely and keeps the run manual_review_required",
-      async (postLoginState) => {
-        const { runSteps, runUpdates } = await runLoginAttemptScenario({
-          attemptWorkdayLogin: async () => ({
-            confidence: "high",
-            hostname: "acme.wd5.myworkdayjobs.com",
-            ok: true,
-            post_login_state: postLoginState,
-            tenant_key: "acme",
-            timestamp: "2026-07-28T00:00:00.000Z"
-          })
-        });
+    it.each([
+      ["otp_required", "route_to_otp_manual_review"],
+      ["verification_required", "route_to_verification_manual_review"],
+      ["invalid_credentials_possible", "stop_invalid_credentials_manual_review"],
+      ["account_locked_possible", "stop_account_locked_manual_review"],
+      ["still_on_login_page", "still_on_login_manual_review"],
+      ["unknown", "unknown_post_login_manual_review"]
+    ] as const)("routes %s safely and keeps the run manual_review_required", async (postLoginState, postLoginRoute) => {
+      const { runSteps, runUpdates } = await runLoginAttemptScenario({
+        attemptWorkdayLogin: async () => ({
+          confidence: "high",
+          hostname: "acme.wd5.myworkdayjobs.com",
+          ok: true,
+          post_login_state: postLoginState,
+          tenant_key: "acme",
+          timestamp: "2026-07-28T00:00:00.000Z"
+        })
+      });
 
-        expect(runSteps[0]?.metadata).toEqual(
-          expect.objectContaining({ login_attempt: expect.objectContaining({ ok: true, post_login_state: postLoginState }) })
-        );
-        expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
-      }
-    );
+      expect(runSteps[0]?.metadata).toEqual(
+        expect.objectContaining({
+          login_attempt: expect.objectContaining({ ok: true, post_login_state: postLoginState }),
+          post_login_decision: expect.objectContaining({
+            execution_allowed: false,
+            post_login_route: postLoginRoute,
+            post_login_state: postLoginState,
+            requires_human_review: true
+          })
+        })
+      );
+      expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+    });
 
     it.each([
       "untrusted_redirect_after_login",
@@ -1172,11 +1249,11 @@ describe("application run processor", () => {
         attemptWorkdayLogin: async () => ({ blockedReason, ok: false })
       });
 
-      expect(runSteps[0]?.metadata).toEqual(
-        expect.objectContaining({ login_attempt: { blocked_reason: blockedReason, ok: false } })
-      );
+      expect(runSteps[0]?.metadata).toEqual(expect.objectContaining({ login_attempt: { blocked_reason: blockedReason, ok: false } }));
       expect(manualReviewItems).toEqual([
-        expect.objectContaining({ error_code: `WORKDAY_LOGIN_ATTEMPT_${blockedReason.toUpperCase()}` })
+        expect.objectContaining({
+          error_code: `WORKDAY_LOGIN_ATTEMPT_${blockedReason.toUpperCase()}`
+        })
       ]);
       expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
     });
@@ -1189,7 +1266,9 @@ describe("application run processor", () => {
       });
 
       expect(runSteps[0]?.metadata).toEqual(
-        expect.objectContaining({ login_attempt: { blocked_reason: "login_attempt_failed", ok: false } })
+        expect.objectContaining({
+          login_attempt: { blocked_reason: "login_attempt_failed", ok: false }
+        })
       );
       expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
       expect(JSON.stringify({ automationLogs, manualReviewItems, runSteps })).not.toContain("leaked-login-secret");
@@ -1256,6 +1335,8 @@ describe("buildManualReviewItemPayload", () => {
       item_type: "routing_review",
       job_link_id: "job-link-id",
       post_apply_state: null,
+      post_login_route: null,
+      post_login_state: null,
       review_reason: "stop_tenant_mismatch",
       risk_level: "high",
       route_reason: null,
@@ -1284,6 +1365,8 @@ describe("buildManualReviewItemPayload", () => {
       item_type: "routing_review",
       job_link_id: "job-link-id",
       post_apply_state: "login_required",
+      post_login_route: null,
+      post_login_state: null,
       review_reason: "route_to_login_flow",
       risk_level: "high",
       route_reason: "login_signal",
@@ -1294,7 +1377,11 @@ describe("buildManualReviewItemPayload", () => {
 });
 
 describe("createManualReviewItemForRun", () => {
-  const payload = buildManualReviewItemPayload({ category: "readiness_blocked", riskLevel: "high", run: claimedRun });
+  const payload = buildManualReviewItemPayload({
+    category: "readiness_blocked",
+    riskLevel: "high",
+    run: claimedRun
+  });
 
   it("inserts the item and logs nothing on success", async () => {
     const { automationLogs, deps, manualReviewItems } = createDeps();

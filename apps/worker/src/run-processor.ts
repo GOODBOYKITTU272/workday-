@@ -4,7 +4,9 @@ import {
   type SafeWorkdayPageSnapshot,
   type WorkdayApplyClickResult,
   type WorkdayLoginAttemptResult,
+  type WorkdayPostLoginDecisionClassification,
   buildPostApplyDecisionRoute,
+  buildPostLoginDecisionRoute,
   type WorkdayLandingActionDiscovery,
   type WorkdayLoginPageInspectionResult,
   type WorkdayPageOpenCheckResult,
@@ -54,11 +56,18 @@ export type ManualReviewCategory =
   | "route_to_create_account_flow"
   | "route_to_login_flow"
   | "route_to_manual_review"
+  | "route_to_otp_manual_review"
   | "route_to_questionnaire_discovery"
+  | "route_to_questionnaire_discovery_later"
+  | "route_to_verification_manual_review"
   | "stop_already_applied"
+  | "stop_account_locked_manual_review"
+  | "stop_invalid_credentials_manual_review"
   | "stop_job_unavailable"
   | "stop_tenant_mismatch"
   | "stop_untrusted_redirect"
+  | "still_on_login_manual_review"
+  | "unknown_post_login_manual_review"
   | "unknown_manual_review";
 
 export type ManualReviewRiskLevel = "high" | "low" | "medium" | "unknown";
@@ -71,6 +80,8 @@ export type ManualReviewItemInsert = {
   item_type: "routing_review";
   job_link_id: string;
   post_apply_state: null | string;
+  post_login_route: null | string;
+  post_login_state: null | string;
   review_reason: ManualReviewCategory;
   risk_level: ManualReviewRiskLevel;
   route_reason: null | string;
@@ -113,12 +124,15 @@ const WORKDAY_PAGE_SNAPSHOT_STEP_NAME = "workday_page_snapshot";
 const WORKDAY_APPLY_CLICK_STEP_NAME = "workday_apply_click";
 const UNKNOWN_WORKER_ERROR = "UNKNOWN_WORKER_ERROR";
 const MANUAL_REVIEW_ITEM_CREATE_FAILED = "MANUAL_REVIEW_ITEM_CREATE_FAILED";
+const POST_LOGIN_ROUTE_REVIEW_REQUIRED = "WORKDAY_POST_LOGIN_ROUTE_REVIEW_REQUIRED";
 
 export function buildManualReviewItemPayload(input: {
   category: ManualReviewCategory;
   errorCode?: null | string;
   hostname?: null | string;
   postApplyState?: null | string;
+  postLoginRoute?: null | string;
+  postLoginState?: null | string;
   riskLevel: ManualReviewRiskLevel;
   routeReason?: null | string;
   run: ClaimedApplicationRun;
@@ -132,6 +146,8 @@ export function buildManualReviewItemPayload(input: {
     item_type: "routing_review",
     job_link_id: input.run.job_link_id,
     post_apply_state: input.postApplyState ?? null,
+    post_login_route: input.postLoginRoute ?? null,
+    post_login_state: input.postLoginState ?? null,
     review_reason: input.category,
     risk_level: input.riskLevel,
     route_reason: input.routeReason ?? null,
@@ -140,11 +156,7 @@ export function buildManualReviewItemPayload(input: {
   };
 }
 
-export async function createManualReviewItemForRun(
-  deps: RunProcessorDeps,
-  run: ClaimedApplicationRun,
-  payload: ManualReviewItemInsert
-): Promise<void> {
+export async function createManualReviewItemForRun(deps: RunProcessorDeps, run: ClaimedApplicationRun, payload: ManualReviewItemInsert): Promise<void> {
   try {
     await deps.insertManualReviewItem(payload);
   } catch {
@@ -178,7 +190,11 @@ export async function processOneApplicationRun(deps: RunProcessorDeps = createSu
     if (!readiness.ok) {
       await finishReadinessFailure(deps, claimedRun, readiness.issues);
 
-      return { issues: readiness.issues, runId: claimedRun.id, status: "readiness_failed" } satisfies RunProcessorResult;
+      return {
+        issues: readiness.issues,
+        runId: claimedRun.id,
+        status: "readiness_failed"
+      } satisfies RunProcessorResult;
     }
 
     if (!readinessInput.jobLink) {
@@ -206,7 +222,10 @@ export async function processOneApplicationRun(deps: RunProcessorDeps = createSu
           pageOpenResult.apply_click.after_tenant_key?.trim() || null
         );
 
-        return { runId: claimedRun.id, status: "apply_click_complete" } satisfies RunProcessorResult;
+        return {
+          runId: claimedRun.id,
+          status: "apply_click_complete"
+        } satisfies RunProcessorResult;
       }
 
       await finishApplyClickBlocked(
@@ -242,7 +261,11 @@ export async function processOneApplicationRun(deps: RunProcessorDeps = createSu
       }
     }
 
-    return { errorCode: UNKNOWN_WORKER_ERROR, runId: claimedRun?.id ?? null, status: "error" } satisfies RunProcessorResult;
+    return {
+      errorCode: UNKNOWN_WORKER_ERROR,
+      runId: claimedRun?.id ?? null,
+      status: "error"
+    } satisfies RunProcessorResult;
   }
 }
 
@@ -343,15 +366,10 @@ function createSupabaseRunProcessorDeps(): RunProcessorDeps {
         throw candidateError ?? jobLinkError;
       }
 
-      const [{ count: activeResumeCount, error: resumeError }, { count: zohoMailboxCount, error: zohoError }] =
-        await Promise.all([
-          client
-            .from("candidate_resumes")
-            .select("id", { count: "exact", head: true })
-            .eq("candidate_id", run.candidate_id)
-            .eq("is_active", true),
-          client.from("zoho_mailboxes").select("id", { count: "exact", head: true }).eq("candidate_id", run.candidate_id)
-        ]);
+      const [{ count: activeResumeCount, error: resumeError }, { count: zohoMailboxCount, error: zohoError }] = await Promise.all([
+        client.from("candidate_resumes").select("id", { count: "exact", head: true }).eq("candidate_id", run.candidate_id).eq("is_active", true),
+        client.from("zoho_mailboxes").select("id", { count: "exact", head: true }).eq("candidate_id", run.candidate_id)
+      ]);
 
       if (resumeError || zohoError) {
         throw resumeError ?? zohoError;
@@ -415,11 +433,7 @@ async function finishReadinessFailure(deps: RunProcessorDeps, run: ClaimedApplic
     status: "manual_review_required"
   });
 
-  await createManualReviewItemForRun(
-    deps,
-    run,
-    buildManualReviewItemPayload({ category: "readiness_blocked", riskLevel: "high", run })
-  );
+  await createManualReviewItemForRun(deps, run, buildManualReviewItemPayload({ category: "readiness_blocked", riskLevel: "high", run }));
 }
 
 async function finishSnapshotSuccess(
@@ -443,11 +457,13 @@ async function finishSnapshotSuccess(
     snapshot.final_url,
     finalTenantKey
   );
+  const postLoginDecision = buildPostLoginDecisionIfAvailable(loginAttempt);
   const metadata = {
     ...buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
     login_attempt: buildSafeLoginAttemptMetadata(loginAttempt),
     login_page_inspection: buildSafeLoginPageInspectionMetadata(loginPageInspection),
     login_readiness: buildSafeLoginReadinessMetadata(loginReadiness),
+    post_login_decision: buildSafePostLoginDecisionMetadata(postLoginDecision),
     post_apply_decision: buildSafePostApplyDecisionMetadata(postApplyDecision),
     post_apply_state: buildSafePostApplyStateMetadata(postApplyState),
     landing_action: discovery
@@ -484,14 +500,16 @@ async function finishSnapshotSuccess(
     deps,
     run,
     buildManualReviewItemPayload({
-      category: postApplyDecision.recommended_next_route,
-      errorCode: loginAttemptErrorCode(loginAttempt) ?? loginReadinessErrorCode(loginReadiness),
-      hostname: snapshot.hostname,
+      category: postLoginDecision?.post_login_route ?? postApplyDecision.recommended_next_route,
+      errorCode: postLoginDecision ? POST_LOGIN_ROUTE_REVIEW_REQUIRED : (loginAttemptErrorCode(loginAttempt) ?? loginReadinessErrorCode(loginReadiness)),
+      hostname: postLoginDecision?.hostname ?? snapshot.hostname,
       postApplyState: postApplyState.post_apply_state,
-      riskLevel: postApplyDecision.route_confidence,
+      postLoginRoute: postLoginDecision?.post_login_route ?? null,
+      postLoginState: postLoginDecision?.post_login_state ?? null,
+      riskLevel: postLoginDecision?.confidence ?? postApplyDecision.route_confidence,
       routeReason: postApplyDecision.route_reason,
       run,
-      tenantKey: finalTenantKey
+      tenantKey: postLoginDecision?.tenant_key ?? finalTenantKey
     })
   );
 }
@@ -518,12 +536,14 @@ async function finishApplyClickSuccess(
     snapshot.final_url,
     finalTenantKey
   );
+  const postLoginDecision = buildPostLoginDecisionIfAvailable(loginAttempt);
   const metadata = {
     ...buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
     apply_click: buildSafeApplyClickMetadata(applyClick),
     login_attempt: buildSafeLoginAttemptMetadata(loginAttempt),
     login_page_inspection: buildSafeLoginPageInspectionMetadata(loginPageInspection),
     login_readiness: buildSafeLoginReadinessMetadata(loginReadiness),
+    post_login_decision: buildSafePostLoginDecisionMetadata(postLoginDecision),
     post_apply_decision: buildSafePostApplyDecisionMetadata(postApplyDecision),
     post_apply_state: buildSafePostApplyStateMetadata(postApplyState),
     landing_action: discovery
@@ -560,14 +580,16 @@ async function finishApplyClickSuccess(
     deps,
     run,
     buildManualReviewItemPayload({
-      category: postApplyDecision.recommended_next_route,
-      errorCode: loginAttemptErrorCode(loginAttempt) ?? loginReadinessErrorCode(loginReadiness),
-      hostname: applyClick.after_hostname,
+      category: postLoginDecision?.post_login_route ?? postApplyDecision.recommended_next_route,
+      errorCode: postLoginDecision ? POST_LOGIN_ROUTE_REVIEW_REQUIRED : (loginAttemptErrorCode(loginAttempt) ?? loginReadinessErrorCode(loginReadiness)),
+      hostname: postLoginDecision?.hostname ?? applyClick.after_hostname,
       postApplyState: postApplyState.post_apply_state,
-      riskLevel: postApplyDecision.route_confidence,
+      postLoginRoute: postLoginDecision?.post_login_route ?? null,
+      postLoginState: postLoginDecision?.post_login_state ?? null,
+      riskLevel: postLoginDecision?.confidence ?? postApplyDecision.route_confidence,
       routeReason: postApplyDecision.route_reason,
       run,
-      tenantKey: finalTenantKey
+      tenantKey: postLoginDecision?.tenant_key ?? finalTenantKey
     })
   );
 }
@@ -621,8 +643,7 @@ async function finishApplyClickBlocked(
     status: "manual_review_required"
   });
 
-  const clickNeverCompleted =
-    applyClick.error_code !== "TENANT_MISMATCH_AFTER_APPLY" && applyClick.error_code !== "UNTRUSTED_REDIRECT_AFTER_APPLY";
+  const clickNeverCompleted = applyClick.error_code !== "TENANT_MISMATCH_AFTER_APPLY" && applyClick.error_code !== "UNTRUSTED_REDIRECT_AFTER_APPLY";
 
   await createManualReviewItemForRun(
     deps,
@@ -695,11 +716,7 @@ async function finishTenantMismatch(
   );
 }
 
-async function finishBlockedPageOpen(
-  deps: RunProcessorDeps,
-  run: ClaimedApplicationRun,
-  result: Exclude<WorkdayPageOpenCheckResult, { ok: true }>
-) {
+async function finishBlockedPageOpen(deps: RunProcessorDeps, run: ClaimedApplicationRun, result: Exclude<WorkdayPageOpenCheckResult, { ok: true }>) {
   const completedAt = getNow(deps);
   const status = result.error_code === "page_open_failed" ? "failed" : "manual_review_required";
   const metadata = buildBlockedPageOpenMetadata(result);
@@ -782,11 +799,7 @@ async function finishUnknownError(deps: RunProcessorDeps, run: ClaimedApplicatio
   });
 }
 
-function buildSafePageSnapshotMetadata(
-  snapshot: SafeWorkdayPageSnapshot,
-  expectedTenantKey: string | null,
-  finalTenantKey: string | null
-) {
+function buildSafePageSnapshotMetadata(snapshot: SafeWorkdayPageSnapshot, expectedTenantKey: string | null, finalTenantKey: string | null) {
   return {
     confidence: snapshot.confidence,
     expected_tenant_known: Boolean(expectedTenantKey),
@@ -824,9 +837,7 @@ function buildSafeApplyClickMetadata(applyClick: WorkdayApplyClickResult) {
   };
 }
 
-function buildSafePostApplyStateMetadata(
-  postApplyState: ReturnType<typeof classifyPostApplyLandingState>
-) {
+function buildSafePostApplyStateMetadata(postApplyState: ReturnType<typeof classifyPostApplyLandingState>) {
   return {
     confidence: postApplyState.confidence,
     post_apply_reason: postApplyState.post_apply_reason,
@@ -834,9 +845,7 @@ function buildSafePostApplyStateMetadata(
   };
 }
 
-function buildSafePostApplyDecisionMetadata(
-  postApplyDecision: ReturnType<typeof buildPostApplyDecisionRoute>
-) {
+function buildSafePostApplyDecisionMetadata(postApplyDecision: ReturnType<typeof buildPostApplyDecisionRoute>) {
   return {
     execution_allowed: postApplyDecision.execution_allowed,
     post_apply_reason: postApplyDecision.post_apply_reason,
@@ -847,6 +856,31 @@ function buildSafePostApplyDecisionMetadata(
     route_confidence: postApplyDecision.route_confidence,
     route_reason: postApplyDecision.route_reason,
     timestamp: postApplyDecision.timestamp
+  };
+}
+
+function buildPostLoginDecisionIfAvailable(loginAttempt: WorkdayLoginAttemptResult | null): WorkdayPostLoginDecisionClassification | null {
+  if (!loginAttempt?.ok) {
+    return null;
+  }
+
+  return buildPostLoginDecisionRoute(loginAttempt);
+}
+
+function buildSafePostLoginDecisionMetadata(postLoginDecision: WorkdayPostLoginDecisionClassification | null) {
+  if (!postLoginDecision) {
+    return null;
+  }
+
+  return {
+    confidence: postLoginDecision.confidence,
+    execution_allowed: postLoginDecision.execution_allowed,
+    hostname: postLoginDecision.hostname,
+    post_login_route: postLoginDecision.post_login_route,
+    post_login_state: postLoginDecision.post_login_state,
+    requires_human_review: postLoginDecision.requires_human_review,
+    tenant_key: postLoginDecision.tenant_key,
+    timestamp: postLoginDecision.timestamp
   };
 }
 

@@ -4,6 +4,7 @@ import {
   attemptTrustedWorkdayLogin,
   captureSafePageSnapshot,
   buildPostApplyDecisionRoute,
+  buildPostLoginDecisionRoute,
   classifyWorkdayLandingPage,
   classifyPostApplyLandingState,
   discoverWorkdayLandingActions,
@@ -36,8 +37,7 @@ describe("workday page snapshot foundation", () => {
               visited.push(url);
             },
             getByRole: (_role: "button" | "link", options: { name: RegExp | string }) => ({
-              isVisible: async () =>
-                visibleLabels.some((label) => (typeof options.name === "string" ? label === options.name : options.name.test(label)))
+              isVisible: async () => visibleLabels.some((label) => (typeof options.name === "string" ? label === options.name : options.name.test(label)))
             }),
             title: async () => "Engineer",
             url: () => "https://acme.wd5.myworkdayjobs.com/External/job/Engineer"
@@ -369,25 +369,39 @@ describe("workday page snapshot foundation", () => {
   ])("discovers %s safely", async (_label, url, title, visibleLabels, expected) => {
     const page = {
       getByRole: (_role: "button" | "link", options: { name: RegExp | string }) => ({
-        isVisible: async () =>
-          visibleLabels.some((label) => (typeof options.name === "string" ? label === options.name : options.name.test(label)))
+        isVisible: async () => visibleLabels.some((label) => (typeof options.name === "string" ? label === options.name : options.name.test(label)))
       })
     };
 
     await expect(
-      discoverWorkdayLandingActions(page as never, {
-        confidence: "high",
-        final_url: url,
-        hostname: "acme.wd5.myworkdayjobs.com",
-        load_status: "loaded",
-        page_kind_confidence: "high",
-        page_kind: expected.action_type === "sign_in_available" ? "sign_in_page" : expected.action_type === "create_account_available" ? "create_account_page" : expected.action_type === "already_signed_in" ? "already_signed_in_page" : expected.action_type === "job_unavailable" ? "unavailable_page" : expected.action_type === "apply_available" ? "job_page" : "job_page",
-        page_title: title,
-        tenant_key: "acme",
-        tenant_name: "acme",
-        timestamp: "2026-07-28T00:00:00.000Z",
-        workday_base_url: "https://acme.wd5.myworkdayjobs.com"
-      }, "2026-07-28T00:00:00.000Z")
+      discoverWorkdayLandingActions(
+        page as never,
+        {
+          confidence: "high",
+          final_url: url,
+          hostname: "acme.wd5.myworkdayjobs.com",
+          load_status: "loaded",
+          page_kind_confidence: "high",
+          page_kind:
+            expected.action_type === "sign_in_available"
+              ? "sign_in_page"
+              : expected.action_type === "create_account_available"
+                ? "create_account_page"
+                : expected.action_type === "already_signed_in"
+                  ? "already_signed_in_page"
+                  : expected.action_type === "job_unavailable"
+                    ? "unavailable_page"
+                    : expected.action_type === "apply_available"
+                      ? "job_page"
+                      : "job_page",
+          page_title: title,
+          tenant_key: "acme",
+          tenant_name: "acme",
+          timestamp: "2026-07-28T00:00:00.000Z",
+          workday_base_url: "https://acme.wd5.myworkdayjobs.com"
+        },
+        "2026-07-28T00:00:00.000Z"
+      )
     ).resolves.toEqual({
       ...expected,
       timestamp: "2026-07-28T00:00:00.000Z"
@@ -414,8 +428,7 @@ describe("workday page snapshot foundation", () => {
                 },
                 count: async () => labels.length,
                 isEnabled: async () => true,
-                isVisible: async () =>
-                  labels.some((label) => (typeof options.name === "string" ? label === options.name : options.name.test(label)))
+                isVisible: async () => labels.some((label) => (typeof options.name === "string" ? label === options.name : options.name.test(label)))
               };
             },
             title: async () => "Engineer",
@@ -427,14 +440,11 @@ describe("workday page snapshot foundation", () => {
     };
 
     await expect(
-      runWorkdayApplyClickDryRun(
-        "https://acme.wd5.myworkdayjobs.com/External/job/Engineer",
-        {
-          launcher,
-          expectedTenantKey: "acme",
-          now: () => "2026-07-28T00:00:00.000Z"
-        }
-      )
+      runWorkdayApplyClickDryRun("https://acme.wd5.myworkdayjobs.com/External/job/Engineer", {
+        launcher,
+        expectedTenantKey: "acme",
+        now: () => "2026-07-28T00:00:00.000Z"
+      })
     ).resolves.toMatchObject({
       apply_click: {
         action_type: "apply_available",
@@ -676,7 +686,11 @@ describe("workday page snapshot foundation", () => {
   it.each([
     [
       "login_required",
-      { confidence: "high" as const, post_apply_reason: "login_signal" as const, post_apply_state: "login_required" as const },
+      {
+        confidence: "high" as const,
+        post_apply_reason: "login_signal" as const,
+        post_apply_state: "login_required" as const
+      },
       "route_to_login_flow"
     ],
     [
@@ -762,8 +776,7 @@ describe("workday page snapshot foundation", () => {
                 },
                 count: async () => labels.length,
                 isEnabled: async () => true,
-                isVisible: async () =>
-                  labels.some((label) => (typeof options.name === "string" ? label === options.name : options.name.test(label)))
+                isVisible: async () => labels.some((label) => (typeof options.name === "string" ? label === options.name : options.name.test(label)))
               };
             },
             title: async () => "Engineer",
@@ -812,8 +825,7 @@ describe("workday page snapshot foundation", () => {
                 },
                 count: async () => labels.length,
                 isEnabled: async () => true,
-                isVisible: async () =>
-                  labels.some((label) => (typeof options.name === "string" ? label === options.name : options.name.test(label)))
+                isVisible: async () => labels.some((label) => (typeof options.name === "string" ? label === options.name : options.name.test(label)))
               };
             },
             title: async () => "Engineer",
@@ -861,8 +873,7 @@ describe("workday page snapshot foundation", () => {
                 },
                 count: async () => labels.length,
                 isEnabled: async () => true,
-                isVisible: async () =>
-                  labels.some((label) => (typeof options.name === "string" ? label === options.name : options.name.test(label)))
+                isVisible: async () => labels.some((label) => (typeof options.name === "string" ? label === options.name : options.name.test(label)))
               };
             },
             title: async () => "Engineer",
@@ -893,13 +904,40 @@ describe("workday page snapshot foundation", () => {
   });
 });
 
+describe("buildPostLoginDecisionRoute", () => {
+  it.each([
+    ["login_success_possible", "route_to_questionnaire_discovery_later"],
+    ["otp_required", "route_to_otp_manual_review"],
+    ["verification_required", "route_to_verification_manual_review"],
+    ["invalid_credentials_possible", "stop_invalid_credentials_manual_review"],
+    ["account_locked_possible", "stop_account_locked_manual_review"],
+    ["still_on_login_page", "still_on_login_manual_review"],
+    ["unknown", "unknown_post_login_manual_review"]
+  ] as const)("routes %s to %s without allowing execution", (postLoginState, postLoginRoute) => {
+    expect(
+      buildPostLoginDecisionRoute({
+        confidence: "high",
+        hostname: "acme.wd5.myworkdayjobs.com",
+        ok: true,
+        post_login_state: postLoginState,
+        tenant_key: "acme",
+        timestamp: "2026-07-28T00:00:00.000Z"
+      })
+    ).toEqual({
+      confidence: "high",
+      execution_allowed: false,
+      hostname: "acme.wd5.myworkdayjobs.com",
+      post_login_route: postLoginRoute,
+      post_login_state: postLoginState,
+      requires_human_review: true,
+      tenant_key: "acme",
+      timestamp: "2026-07-28T00:00:00.000Z"
+    });
+  });
+});
+
 describe("inspectTrustedWorkdayLoginPage", () => {
-  function createLoginPageLauncher(config: {
-    emailFieldCount?: number;
-    finalUrl?: string;
-    passwordFieldCount?: number;
-    signInButtonVisible?: boolean;
-  }) {
+  function createLoginPageLauncher(config: { emailFieldCount?: number; finalUrl?: string; passwordFieldCount?: number; signInButtonVisible?: boolean }) {
     const visited: string[] = [];
     const closed: string[] = [];
     const finalUrl = config.finalUrl ?? "https://acme.wd5.myworkdayjobs.com/External/sign-in";
@@ -924,8 +962,7 @@ describe("inspectTrustedWorkdayLoginPage", () => {
               click: async () => undefined,
               count: async () => (signInButtonVisible ? 1 : 0),
               isEnabled: async () => true,
-              isVisible: async () =>
-                signInButtonVisible && (typeof options.name === "string" ? false : options.name.test("Sign In"))
+              isVisible: async () => signInButtonVisible && (typeof options.name === "string" ? false : options.name.test("Sign In"))
             }),
             goto: async (url: string) => {
               visited.push(url);
@@ -954,7 +991,11 @@ describe("inspectTrustedWorkdayLoginPage", () => {
   }
 
   it("reports high confidence when password, email, and sign-in signals are all present", async () => {
-    const { launcher } = createLoginPageLauncher({ emailFieldCount: 1, passwordFieldCount: 1, signInButtonVisible: true });
+    const { launcher } = createLoginPageLauncher({
+      emailFieldCount: 1,
+      passwordFieldCount: 1,
+      signInButtonVisible: true
+    });
 
     await expect(
       inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", {
@@ -975,9 +1016,7 @@ describe("inspectTrustedWorkdayLoginPage", () => {
   it("reports low confidence when only a password field is present", async () => {
     const { launcher } = createLoginPageLauncher({ passwordFieldCount: 1 });
 
-    await expect(
-      inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", { launcher })
-    ).resolves.toEqual(
+    await expect(inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", { launcher })).resolves.toEqual(
       expect.objectContaining({
         confidence: "low",
         login_page_detected: true,
@@ -990,9 +1029,7 @@ describe("inspectTrustedWorkdayLoginPage", () => {
   it("reports unknown confidence and login_page_detected false when no password field exists", async () => {
     const { launcher } = createLoginPageLauncher({ emailFieldCount: 1, signInButtonVisible: true });
 
-    await expect(
-      inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", { launcher })
-    ).resolves.toEqual(
+    await expect(inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", { launcher })).resolves.toEqual(
       expect.objectContaining({
         confidence: "unknown",
         login_page_detected: false,
@@ -1006,7 +1043,9 @@ describe("inspectTrustedWorkdayLoginPage", () => {
     const { launcher, visited } = createLoginPageLauncher({ passwordFieldCount: 1 });
 
     await expect(
-      inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", null, { launcher })
+      inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", null, {
+        launcher
+      })
     ).resolves.toEqual({ blockedReason: "expected_tenant_missing", ok: false });
     expect(visited).toEqual([]);
   });
@@ -1014,18 +1053,23 @@ describe("inspectTrustedWorkdayLoginPage", () => {
   it("blocks and never navigates when the pre-navigation tenant does not match the expected tenant", async () => {
     const { launcher, visited } = createLoginPageLauncher({ passwordFieldCount: 1 });
 
-    await expect(
-      inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "beta", { launcher })
-    ).resolves.toEqual({ blockedReason: "tenant_mismatch_before_open", ok: false });
+    await expect(inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "beta", { launcher })).resolves.toEqual({
+      blockedReason: "tenant_mismatch_before_open",
+      ok: false
+    });
     expect(visited).toEqual([]);
   });
 
   it("blocks when redirected to an untrusted final URL", async () => {
-    const { closed, launcher } = createLoginPageLauncher({ finalUrl: "https://evil.com/phishing", passwordFieldCount: 1 });
+    const { closed, launcher } = createLoginPageLauncher({
+      finalUrl: "https://evil.com/phishing",
+      passwordFieldCount: 1
+    });
 
-    await expect(
-      inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", { launcher })
-    ).resolves.toEqual({ blockedReason: "untrusted_redirect", ok: false });
+    await expect(inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", { launcher })).resolves.toEqual({
+      blockedReason: "untrusted_redirect",
+      ok: false
+    });
     expect(closed).toEqual(["page", "context", "browser"]);
   });
 
@@ -1035,9 +1079,10 @@ describe("inspectTrustedWorkdayLoginPage", () => {
       passwordFieldCount: 1
     });
 
-    await expect(
-      inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", { launcher })
-    ).resolves.toEqual({ blockedReason: "tenant_mismatch_after_open", ok: false });
+    await expect(inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", { launcher })).resolves.toEqual({
+      blockedReason: "tenant_mismatch_after_open",
+      ok: false
+    });
     expect(closed).toEqual(["page", "context", "browser"]);
   });
 
@@ -1049,7 +1094,11 @@ describe("inspectTrustedWorkdayLoginPage", () => {
   });
 
   it("always closes the page, context, and browser on success", async () => {
-    const { closed, launcher } = createLoginPageLauncher({ emailFieldCount: 1, passwordFieldCount: 1, signInButtonVisible: true });
+    const { closed, launcher } = createLoginPageLauncher({
+      emailFieldCount: 1,
+      passwordFieldCount: 1,
+      signInButtonVisible: true
+    });
 
     await inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", { launcher });
 
@@ -1057,7 +1106,11 @@ describe("inspectTrustedWorkdayLoginPage", () => {
   });
 
   it("never returns raw labels, selectors, HTML, or field values — only booleans and enums", async () => {
-    const { launcher } = createLoginPageLauncher({ emailFieldCount: 1, passwordFieldCount: 1, signInButtonVisible: true });
+    const { launcher } = createLoginPageLauncher({
+      emailFieldCount: 1,
+      passwordFieldCount: 1,
+      signInButtonVisible: true
+    });
 
     const result = await inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", { launcher });
 
@@ -1155,33 +1208,23 @@ describe("attemptTrustedWorkdayLogin", () => {
   it("fills email then password, then clicks sign in, only in that order", async () => {
     const { actions, launcher } = createLoginAttemptLauncher({});
 
-    const result = await attemptTrustedWorkdayLogin(
-      loginUrl,
-      "acme",
-      { email: "candidate@example.com", passwordEncrypted: validPassword },
-      encryptionKey,
-      { launcher, now: () => "2026-07-28T00:00:00.000Z" }
-    );
+    const result = await attemptTrustedWorkdayLogin(loginUrl, "acme", { email: "candidate@example.com", passwordEncrypted: validPassword }, encryptionKey, {
+      launcher,
+      now: () => "2026-07-28T00:00:00.000Z"
+    });
 
     expect(result.ok).toBe(true);
-    expect(actions).toEqual([
-      "fill:email:candidate@example.com",
-      "fill:password:super-secret-password",
-      "click:button"
-    ]);
+    expect(actions).toEqual(["fill:email:candidate@example.com", "fill:password:super-secret-password", "click:button"]);
   });
 
   it("reports login_success_possible when the final page is away from sign-in and error patterns", async () => {
     const { launcher } = createLoginAttemptLauncher({});
 
     await expect(
-      attemptTrustedWorkdayLogin(
-        loginUrl,
-        "acme",
-        { email: "candidate@example.com", passwordEncrypted: validPassword },
-        encryptionKey,
-        { launcher, now: () => "2026-07-28T00:00:00.000Z" }
-      )
+      attemptTrustedWorkdayLogin(loginUrl, "acme", { email: "candidate@example.com", passwordEncrypted: validPassword }, encryptionKey, {
+        launcher,
+        now: () => "2026-07-28T00:00:00.000Z"
+      })
     ).resolves.toEqual({
       confidence: "medium",
       hostname: "acme.wd5.myworkdayjobs.com",
@@ -1211,7 +1254,13 @@ describe("attemptTrustedWorkdayLogin", () => {
 
     await expect(
       attemptTrustedWorkdayLogin(loginUrl, "acme", { email: "a@b.com", passwordEncrypted: validPassword }, encryptionKey, { launcher })
-    ).resolves.toEqual(expect.objectContaining({ confidence: "high", ok: true, post_login_state: "verification_required" }));
+    ).resolves.toEqual(
+      expect.objectContaining({
+        confidence: "high",
+        ok: true,
+        post_login_state: "verification_required"
+      })
+    );
   });
 
   it("detects account_locked_possible from the post-login URL and title", async () => {
@@ -1222,7 +1271,13 @@ describe("attemptTrustedWorkdayLogin", () => {
 
     await expect(
       attemptTrustedWorkdayLogin(loginUrl, "acme", { email: "a@b.com", passwordEncrypted: validPassword }, encryptionKey, { launcher })
-    ).resolves.toEqual(expect.objectContaining({ confidence: "high", ok: true, post_login_state: "account_locked_possible" }));
+    ).resolves.toEqual(
+      expect.objectContaining({
+        confidence: "high",
+        ok: true,
+        post_login_state: "account_locked_possible"
+      })
+    );
   });
 
   it("detects invalid_credentials_possible when still on the sign-in page with a visible alert", async () => {
@@ -1234,7 +1289,13 @@ describe("attemptTrustedWorkdayLogin", () => {
 
     await expect(
       attemptTrustedWorkdayLogin(loginUrl, "acme", { email: "a@b.com", passwordEncrypted: validPassword }, encryptionKey, { launcher })
-    ).resolves.toEqual(expect.objectContaining({ confidence: "medium", ok: true, post_login_state: "invalid_credentials_possible" }));
+    ).resolves.toEqual(
+      expect.objectContaining({
+        confidence: "medium",
+        ok: true,
+        post_login_state: "invalid_credentials_possible"
+      })
+    );
   });
 
   it("detects still_on_login_page when still on sign-in with no alert visible", async () => {
@@ -1246,7 +1307,13 @@ describe("attemptTrustedWorkdayLogin", () => {
 
     await expect(
       attemptTrustedWorkdayLogin(loginUrl, "acme", { email: "a@b.com", passwordEncrypted: validPassword }, encryptionKey, { launcher })
-    ).resolves.toEqual(expect.objectContaining({ confidence: "low", ok: true, post_login_state: "still_on_login_page" }));
+    ).resolves.toEqual(
+      expect.objectContaining({
+        confidence: "low",
+        ok: true,
+        post_login_state: "still_on_login_page"
+      })
+    );
   });
 
   it("blocks and never navigates when the expected tenant key is missing", async () => {
@@ -1307,7 +1374,9 @@ describe("attemptTrustedWorkdayLogin", () => {
   });
 
   it("blocks when redirected to an untrusted URL after sign-in", async () => {
-    const { closed, launcher } = createLoginAttemptLauncher({ urlAfterClick: "https://evil.com/phishing" });
+    const { closed, launcher } = createLoginAttemptLauncher({
+      urlAfterClick: "https://evil.com/phishing"
+    });
 
     await expect(
       attemptTrustedWorkdayLogin(loginUrl, "acme", { email: "a@b.com", passwordEncrypted: validPassword }, encryptionKey, { launcher })
@@ -1316,7 +1385,9 @@ describe("attemptTrustedWorkdayLogin", () => {
   });
 
   it("blocks when the tenant changes after sign-in", async () => {
-    const { closed, launcher } = createLoginAttemptLauncher({ urlAfterClick: "https://beta.wd5.myworkdayjobs.com/External/home" });
+    const { closed, launcher } = createLoginAttemptLauncher({
+      urlAfterClick: "https://beta.wd5.myworkdayjobs.com/External/home"
+    });
 
     await expect(
       attemptTrustedWorkdayLogin(loginUrl, "acme", { email: "a@b.com", passwordEncrypted: validPassword }, encryptionKey, { launcher })
@@ -1335,13 +1406,10 @@ describe("attemptTrustedWorkdayLogin", () => {
   it("never returns the plaintext or encrypted password, the email, or any raw page content", async () => {
     const { launcher } = createLoginAttemptLauncher({});
 
-    const result = await attemptTrustedWorkdayLogin(
-      loginUrl,
-      "acme",
-      { email: "candidate@example.com", passwordEncrypted: validPassword },
-      encryptionKey,
-      { launcher, now: () => "2026-07-28T00:00:00.000Z" }
-    );
+    const result = await attemptTrustedWorkdayLogin(loginUrl, "acme", { email: "candidate@example.com", passwordEncrypted: validPassword }, encryptionKey, {
+      launcher,
+      now: () => "2026-07-28T00:00:00.000Z"
+    });
 
     expect(result.ok).toBe(true);
     expect(Object.keys(result).sort()).toEqual(["confidence", "hostname", "ok", "post_login_state", "tenant_key", "timestamp"].sort());

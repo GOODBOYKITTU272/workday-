@@ -31,7 +31,7 @@ export function isViewer(role: AppRole | null | undefined) {
   return hasRole(role, "viewer");
 }
 
-export function hasActiveProfile(profile: AppUserProfile | null | undefined) {
+export function hasActiveProfile(profile: AppUserProfile | null | undefined): profile is AppUserProfile {
   return profile?.status === "active";
 }
 

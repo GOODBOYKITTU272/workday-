@@ -51,3 +51,13 @@ Run the optional smoke test:
 ```bash
 corepack pnpm --filter @applywizz/worker smoke:browser
 ```
+
+Phase 18 adds an optional Workday page open smoke test. It opens only a trusted `https://` Workday job URL and stops after a safe metadata snapshot.
+
+Run the optional Workday page smoke test:
+
+```bash
+RUN_WORKDAY_PAGE_OPEN_SMOKE_TEST=1 TEST_WORKDAY_JOB_URL="https://acme.wd5.myworkdayjobs.com/External/job/Engineer" corepack pnpm --filter @applywizz/worker smoke:workday-page
+```
+
+If `TEST_WORKDAY_JOB_URL` is missing, the script prints a skip message and exits 0.

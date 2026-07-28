@@ -41,7 +41,7 @@ export type ApplyWizzCandidatePayload = {
 
 export type ApplyWizzLeadMappingResult =
   | { ok: true; payload: ApplyWizzCandidatePayload }
-  | { ok: false; reason: "invalid_email" | "missing_external_lead_id" | "missing_name" };
+  | { ok: false; reason: "invalid_email" | "missing_external_lead_id" | "missing_name" | "not_in_progress" };
 
 export type ApplyWizzLeadsSyncSummary = {
   attached_existing: number;
@@ -71,6 +71,7 @@ export function mapApplyWizzLeadToCandidate(lead: ApplyWizzLead, syncedAt: strin
   const externalLeadId = safeString(lead.id);
   const email = safeString(lead.email).toLowerCase();
   const fullName = safeString(lead.name);
+  const upstreamStatus = safeString(lead.status).toLowerCase();
 
   if (!externalLeadId) {
     return { ok: false, reason: "missing_external_lead_id" };
@@ -82,6 +83,10 @@ export function mapApplyWizzLeadToCandidate(lead: ApplyWizzLead, syncedAt: strin
 
   if (!email || !emailPattern.test(email)) {
     return { ok: false, reason: "invalid_email" };
+  }
+
+  if (upstreamStatus !== "in progress") {
+    return { ok: false, reason: "not_in_progress" };
   }
 
   return {

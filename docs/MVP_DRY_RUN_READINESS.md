@@ -63,6 +63,7 @@ Mobile web:
 
 The privileged Supabase key and encrypted Workday credential fields belong only on the worker/server side. They must not be exposed to the mobile web app.
 The ApplyWizz Leads API values are worker-only secrets. Never put them in `EXPO_PUBLIC` variables, frontend code, or browser-visible Vercel public environment variables.
+`APPLYWIZZ_LEADS_API_URL` must include `status=In%20Progress&services_opted=applications&services_opted_logic=and`. The worker also defensively enforces `lead.status == "In Progress"` after trimming and case normalization, so Paused or Completed clients are not imported if the URL is changed later.
 
 Manual candidate sync:
 

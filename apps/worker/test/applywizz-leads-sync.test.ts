@@ -61,6 +61,27 @@ describe("ApplyWizz leads sync", () => {
     expect(mapped).not.toContain("\"id\":2026");
   });
 
+  it.each(["In Progress", "in progress", "  In Progress  "])("imports %s status leads", (status) => {
+    expect(mapApplyWizzLeadToCandidate({ ...lead, status }, syncedAt)).toEqual(
+      expect.objectContaining({
+        ok: true
+      })
+    );
+  });
+
+  it.each(["Paused", "Completed", undefined])("skips non-In-Progress status %s", async (status) => {
+    const store = createStore();
+    const result = await syncApplyWizzLeads({
+      fetchLeads: async () => [{ ...lead, status }],
+      now: () => syncedAt,
+      store
+    });
+
+    expect(result.skipped_invalid).toBe(1);
+    expect(store.updates).toEqual([]);
+    expect(store.upserts).toEqual([]);
+  });
+
   it("skips missing or invalid email", async () => {
     const store = createStore();
     const result = await syncApplyWizzLeads({
@@ -151,9 +172,9 @@ describe("ApplyWizz leads sync", () => {
   });
 
   it("does not include credentials in the sync summary", async () => {
-    const result = await syncApplyWizzLeads({ fetchLeads: async () => [lead], store: createStore(), now: () => syncedAt });
+    const result = await syncApplyWizzLeads({ fetchLeads: async () => [{ ...lead, clientPreferences: { token: "credential raw lead JSON" } }], store: createStore(), now: () => syncedAt });
 
-    expect(JSON.stringify(result)).not.toMatch(/base64-test|admin|credential|authorization/i);
+    expect(JSON.stringify(result)).not.toMatch(/base64-test|admin|credential|authorization|raw lead JSON/i);
   });
 
   it("keeps ApplyWizz leads env separate from the main worker env", () => {

@@ -41,6 +41,7 @@ function createDeps(overrides: Partial<RunProcessorDeps> = {}) {
   const manualReviewItems: ManualReviewItemInsert[] = [];
 
   const deps: RunProcessorDeps = {
+    checkWorkdayLoginReadiness: async () => ({ ok: true }),
     claimNextRun: async () => claimedRun,
     insertAutomationLog: async (payload) => {
       automationLogs.push(payload);
@@ -700,6 +701,121 @@ describe("application run processor", () => {
         risk_level: "high"
       })
     ]);
+  });
+
+  describe("Workday login readiness (route_to_login_flow only)", () => {
+    function createLoginRouteDeps(overrides: Partial<RunProcessorDeps> = {}) {
+      return createDeps({
+        openWorkdayPage: async (): Promise<WorkdayPageOpenCheckResult> => ({
+          ok: true,
+          discovery: {
+            action_type: "sign_in_available",
+            confidence: "high",
+            safe_label_category: "sign_in",
+            selector_category: "button",
+            source: "selector_signal",
+            timestamp: "2026-07-28T00:00:00.000Z"
+          },
+          snapshot: { ...trustedSnapshot, page_kind: "sign_in_page" },
+          url: trustedSnapshot.final_url
+        }),
+        ...overrides
+      });
+    }
+
+    it("passes the candidate and tenant to the readiness check only when routed to login", async () => {
+      const calls: Array<{ candidateId: string; tenantKey: string | null }> = [];
+      const { deps } = createLoginRouteDeps({
+        checkWorkdayLoginReadiness: async (candidateId, tenantKey) => {
+          calls.push({ candidateId, tenantKey });
+
+          return { ok: true };
+        }
+      });
+
+      await processOneApplicationRun(deps);
+
+      expect(calls).toEqual([{ candidateId: "candidate-id", tenantKey: "acme" }]);
+    });
+
+    it("does not call the readiness check for routes other than route_to_login_flow", async () => {
+      let callCount = 0;
+      const { deps } = createDeps({
+        checkWorkdayLoginReadiness: async () => {
+          callCount += 1;
+
+          return { ok: true };
+        }
+      });
+
+      await processOneApplicationRun(deps);
+
+      expect(callCount).toBe(0);
+    });
+
+    it("creates a route_to_login_flow item with no error_code when the account is ready", async () => {
+      const { manualReviewItems, runSteps, runUpdates } = await runLoginRouteScenario({
+        checkWorkdayLoginReadiness: async () => ({ ok: true })
+      });
+
+      expect(manualReviewItems).toEqual([
+        expect.objectContaining({ error_code: null, item_type: "routing_review", review_reason: "route_to_login_flow" })
+      ]);
+      expect(runSteps[0]?.metadata).toEqual(
+        expect.objectContaining({ login_readiness: { blocked_reason: null, ok: true } })
+      );
+      expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+    });
+
+    it.each([
+      ["account_missing", "WORKDAY_LOGIN_ACCOUNT_MISSING"],
+      ["account_locked", "WORKDAY_LOGIN_ACCOUNT_LOCKED"],
+      ["account_disabled", "WORKDAY_LOGIN_ACCOUNT_DISABLED"],
+      ["password_missing", "WORKDAY_LOGIN_PASSWORD_MISSING"],
+      ["password_decrypt_failed", "WORKDAY_LOGIN_PASSWORD_DECRYPT_FAILED"]
+    ] as const)("sets a safe error_code for %s without blocking the run", async (blockedReason, expectedErrorCode) => {
+      const { manualReviewItems, runUpdates } = await runLoginRouteScenario({
+        checkWorkdayLoginReadiness: async () => ({ blockedReason, ok: false })
+      });
+
+      expect(manualReviewItems).toEqual([
+        expect.objectContaining({ error_code: expectedErrorCode, review_reason: "route_to_login_flow" })
+      ]);
+      expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+    });
+
+    it("keeps the run manual_review_required and logs nothing sensitive when the readiness check itself throws", async () => {
+      const { automationLogs, manualReviewItems, runSteps, runUpdates } = await runLoginRouteScenario({
+        checkWorkdayLoginReadiness: async () => {
+          throw new Error("supabase connection string with credentials leaked-secret-value");
+        }
+      });
+
+      expect(runSteps[0]?.metadata).toEqual(
+        expect.objectContaining({ login_readiness: { blocked_reason: "readiness_check_failed", ok: false } })
+      );
+      expect(manualReviewItems).toEqual([expect.objectContaining({ error_code: "WORKDAY_LOGIN_READINESS_CHECK_FAILED" })]);
+      expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+      expect(JSON.stringify({ automationLogs, manualReviewItems, runSteps })).not.toContain("leaked-secret-value");
+    });
+
+    it("never includes account_status, email, or password fields in run_steps, automation_logs, or manual_review_items", async () => {
+      const { automationLogs, manualReviewItems, runSteps } = await runLoginRouteScenario({
+        checkWorkdayLoginReadiness: async () => ({ blockedReason: "password_decrypt_failed", ok: false })
+      });
+
+      const writes = JSON.stringify({ automationLogs, manualReviewItems, runSteps });
+
+      expect(writes).not.toMatch(/password_encrypted|super-secret|@example\.com/i);
+    });
+
+    async function runLoginRouteScenario(overrides: Partial<RunProcessorDeps>) {
+      const { automationLogs, deps, manualReviewItems, runSteps, runUpdates } = createLoginRouteDeps(overrides);
+
+      await expect(processOneApplicationRun(deps)).resolves.toEqual({ runId: "run-id", status: "snapshot_complete" });
+
+      return { automationLogs, manualReviewItems, runSteps, runUpdates };
+    }
   });
 
   it("updates a claimed run safely when an unknown error occurs", async () => {

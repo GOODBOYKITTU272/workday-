@@ -1,6 +1,6 @@
 import { detectWorkdayTenantFromUrl } from "@applywizz/shared";
 
-type WorkerWorkdayAccountStatus =
+export type WorkerWorkdayAccountStatus =
   | "unknown"
   | "created"
   | "existing"

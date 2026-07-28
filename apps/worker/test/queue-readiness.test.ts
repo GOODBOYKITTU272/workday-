@@ -13,7 +13,7 @@ const readyInput = {
 describe("worker queue readiness", () => {
   it("allows only safe claimable run statuses", () => {
     expect(isClaimableRunStatus("queued")).toBe(true);
-    expect(isClaimableRunStatus("starting")).toBe(false);
+    expect(isClaimableRunStatus("starting")).toBe(true);
     expect(isClaimableRunStatus("approved_for_submit")).toBe(false);
     expect(isClaimableRunStatus("submitted")).toBe(false);
   });

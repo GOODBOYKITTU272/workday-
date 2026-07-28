@@ -1,5 +1,7 @@
 import { APP_NAME } from "@applywizz/shared";
 
+export { processOneApplicationRun } from "./run-processor.js";
+
 export function getWorkerBanner() {
   return `${APP_NAME} worker scaffold`;
 }

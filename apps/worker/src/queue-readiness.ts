@@ -15,7 +15,7 @@ export type WorkerRunReadinessResult = {
 };
 
 export function isClaimableRunStatus(status: WorkerRunStatus) {
-  return status === "queued";
+  return status === "queued" || status === "starting";
 }
 
 export function validateWorkerRunReadiness(input: WorkerRunReadinessInput): WorkerRunReadinessResult {

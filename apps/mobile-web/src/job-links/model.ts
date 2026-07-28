@@ -1,3 +1,5 @@
+import { detectWorkdayTenantFromUrl } from "@applywizz/shared";
+
 import type { AppRole } from "../auth/model";
 
 export type JobLinkStatus =
@@ -62,13 +64,15 @@ export function canManageJobLinks(role: AppRole | null | undefined) {
 
 export function normalizeJobUrl(rawUrl: string) {
   const url = new URL(rawUrl.trim());
+  const workdayDetection = detectWorkdayTenantFromUrl(rawUrl);
+
+  if (workdayDetection.is_workday_url && workdayDetection.normalized_url) {
+    return workdayDetection.normalized_url;
+  }
+
   url.protocol = url.protocol.toLowerCase();
   url.hostname = url.hostname.toLowerCase();
   url.hash = "";
-
-  if (url.hostname.includes("workday")) {
-    url.search = "";
-  }
 
   if (url.pathname.length > 1) {
     url.pathname = url.pathname.replace(/\/+$/, "");
@@ -78,12 +82,7 @@ export function normalizeJobUrl(rawUrl: string) {
 }
 
 export function isWorkdayJobUrl(rawUrl: string) {
-  try {
-    const url = new URL(rawUrl.trim());
-    return url.hostname.toLowerCase().includes("workday");
-  } catch {
-    return false;
-  }
+  return detectWorkdayTenantFromUrl(rawUrl).is_workday_url;
 }
 
 export function validateJobLinkInput(input: JobLinkInput): JobLinkValidationErrors {
@@ -121,6 +120,7 @@ export function validateJobLinkInput(input: JobLinkInput): JobLinkValidationErro
 
 export function toJobLinkPayload(input: JobLinkInput, createdBy?: string | null) {
   const normalizedUrl = normalizeJobUrl(input.url);
+  const workdayDetection = detectWorkdayTenantFromUrl(input.url);
 
   return {
     ...(createdBy === undefined ? {} : { created_by: createdBy }),
@@ -133,6 +133,6 @@ export function toJobLinkPayload(input: JobLinkInput, createdBy?: string | null)
     source: input.source?.trim() || null,
     status: input.status ?? "queued",
     url: input.url.trim(),
-    workday_tenant_key: input.workday_tenant_key?.trim() || null
+    workday_tenant_key: input.workday_tenant_key?.trim() || workdayDetection.tenant_key || null
   };
 }

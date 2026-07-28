@@ -1,3 +1,4 @@
+import { detectWorkdayTenantFromUrl } from "@applywizz/shared";
 import { Link, Redirect, type Href, useLocalSearchParams } from "expo-router";
 import type { ChangeEvent, ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
@@ -28,6 +29,7 @@ import type {
   WorkdayAccountValidationErrors
 } from "../../src/workday/model";
 import {
+  buildWorkdayAccountReadiness,
   canManageWorkdayAccounts,
   isWorkdayAccountEmailMismatch,
   toWorkdayAccountPayload,
@@ -586,6 +588,7 @@ export default function CandidateDetailScreen() {
                       form={workdayForm}
                       formErrors={workdayFormErrors}
                       isSaving={isSavingWorkday}
+                      jobLinks={jobLinks}
                       onCancel={resetWorkdayForm}
                       onEdit={startEditWorkdayAccount}
                       onSave={saveWorkdayAccount}
@@ -851,31 +854,39 @@ function JobLinksSection({
         <Text className="text-sm text-zinc-400">No job links added for this candidate.</Text>
       ) : (
         <View className="gap-3">
-          {jobLinks.map((jobLink) => (
-            <View className="rounded-md border border-border p-4" key={jobLink.id}>
-              <View className="gap-3 md:flex-row md:items-start md:justify-between">
-                <View className="min-w-0 flex-1">
-                  <Text className="text-base font-semibold text-zinc-100">{jobLink.job_title || "Untitled job"}</Text>
-                  <Text className="mt-1 text-sm text-zinc-400">{jobLink.company_name || "Company not set"}</Text>
-                  <Text className="mt-2 text-sm text-zinc-500">{jobLink.normalized_url}</Text>
-                  <View className="mt-3 gap-2">
-                    <DetailRow label="Tenant Key" value={jobLink.workday_tenant_key} />
-                    <DetailRow label="Priority" value={String(jobLink.priority)} />
-                    <DetailRow label="Source" value={jobLink.source} />
-                    <DetailRow label="Last Error" value={jobLink.last_error} />
+          {jobLinks.map((jobLink) => {
+            const detection = detectWorkdayTenantFromUrl(jobLink.url);
+            const detectedTenantKey = jobLink.workday_tenant_key || detection.tenant_key;
+
+            return (
+              <View className="rounded-md border border-border p-4" key={jobLink.id}>
+                <View className="gap-3 md:flex-row md:items-start md:justify-between">
+                  <View className="min-w-0 flex-1">
+                    <Text className="text-base font-semibold text-zinc-100">{jobLink.job_title || "Untitled job"}</Text>
+                    <Text className="mt-1 text-sm text-zinc-400">{jobLink.company_name || "Company not set"}</Text>
+                    <Text className="mt-2 text-sm text-zinc-500">{jobLink.normalized_url}</Text>
+                    <View className="mt-3 gap-2">
+                      <DetailRow label="Tenant Key" value={jobLink.workday_tenant_key} />
+                      <DetailRow label="Detected Tenant" value={detectedTenantKey} />
+                      <DetailRow label="Workday Base URL" value={detection.workday_base_url} />
+                      <DetailRow label="Detection" value={detection.is_workday_url ? detection.confidence : detection.reason} />
+                      <DetailRow label="Priority" value={String(jobLink.priority)} />
+                      <DetailRow label="Source" value={jobLink.source} />
+                      <DetailRow label="Last Error" value={jobLink.last_error} />
+                    </View>
+                  </View>
+                  <View className="items-start gap-2 md:items-end">
+                    <JobLinkStatusBadge status={jobLink.status} />
+                    {canEdit ? (
+                      <Pressable className="min-h-10 items-center justify-center rounded-md border border-border px-4" onPress={() => onEdit(jobLink)}>
+                        <Text className="text-sm font-semibold text-zinc-100">Edit</Text>
+                      </Pressable>
+                    ) : null}
                   </View>
                 </View>
-                <View className="items-start gap-2 md:items-end">
-                  <JobLinkStatusBadge status={jobLink.status} />
-                  {canEdit ? (
-                    <Pressable className="min-h-10 items-center justify-center rounded-md border border-border px-4" onPress={() => onEdit(jobLink)}>
-                      <Text className="text-sm font-semibold text-zinc-100">Edit</Text>
-                    </Pressable>
-                  ) : null}
-                </View>
               </View>
-            </View>
-          ))}
+            );
+          })}
         </View>
       )}
     </View>
@@ -1067,6 +1078,7 @@ function WorkdayAccountsSection({
   form,
   formErrors,
   isSaving,
+  jobLinks,
   onCancel,
   onEdit,
   onSave,
@@ -1081,6 +1093,7 @@ function WorkdayAccountsSection({
   form: WorkdayAccountInput;
   formErrors: WorkdayAccountValidationErrors;
   isSaving: boolean;
+  jobLinks: JobLinkRecord[];
   onCancel: () => void;
   onEdit: (account: WorkdayAccountRecord) => void;
   onSave: () => Promise<void>;
@@ -1088,6 +1101,18 @@ function WorkdayAccountsSection({
   saveError: string | null;
   success: string | null;
 }) {
+  const readiness = buildWorkdayAccountReadiness({
+    accounts,
+    candidateEmail: candidate.email,
+    jobLinks
+  });
+  const detections = jobLinks
+    .map((jobLink) => ({
+      jobLink,
+      parsed: detectWorkdayTenantFromUrl(jobLink.url)
+    }))
+    .filter((item) => item.jobLink.workday_tenant_key || item.parsed.tenant_key);
+
   return (
     <View className="mt-4 gap-4">
       <View>
@@ -1095,8 +1120,39 @@ function WorkdayAccountsSection({
         <Text className="mt-1 text-base font-semibold text-zinc-100">{candidate.email}</Text>
       </View>
 
+      <View className="gap-2 rounded-md border border-border p-4">
+        <ReadinessRow label="Candidate Email" ready={readiness.candidateEmailExists} value={candidate.email || null} />
+        <ReadinessRow label="Workday Job Link" ready={readiness.jobLinkExists} value={String(jobLinks.length)} />
+        <ReadinessRow label="Tenant Detected" ready={readiness.tenantDetected} value={readiness.tenantKey} />
+        <ReadinessRow label="Workday Account" ready={readiness.accountExists} value={readiness.accountExists ? "Exists" : "Not created"} />
+        <ReadinessRow label="Account Status" ready={readiness.accountStatus === "existing" || readiness.accountStatus === "created" || readiness.accountStatus === "login_success"} value={readiness.accountStatus} />
+      </View>
+
       {canEdit ? (
         <View className="gap-4">
+          {detections.length > 0 ? (
+            <View className="gap-2">
+              {detections.map(({ jobLink, parsed }) => {
+                const tenantKey = jobLink.workday_tenant_key || parsed.tenant_key;
+
+                return (
+                  <Pressable
+                    className="rounded-md border border-border p-3"
+                    key={jobLink.id}
+                    onPress={() => {
+                      onUpdate("tenant_key", tenantKey ?? "");
+                      onUpdate("tenant_name", parsed.tenant_name ?? jobLink.company_name ?? "");
+                      onUpdate("workday_base_url", parsed.workday_base_url ?? "");
+                      onUpdate("email", candidate.email);
+                    }}
+                  >
+                    <Text className="text-sm font-semibold text-zinc-100">{tenantKey || "Detected tenant"}</Text>
+                    <Text className="mt-1 text-sm text-zinc-400">{jobLink.job_title || jobLink.company_name || parsed.workday_base_url}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : null}
           <View className="gap-4 md:flex-row">
             <View className="flex-1">
               <Field label="Tenant Key" error={formErrors.tenant_key}>
@@ -1258,6 +1314,18 @@ function WorkdayAccountStatusBadge({ status }: { status: WorkdayAccountStatus })
     >
       {status}
     </Text>
+  );
+}
+
+function ReadinessRow({ label, ready, value }: { label: string; ready: boolean; value: string | null }) {
+  return (
+    <View className="flex-row items-center justify-between gap-3">
+      <View className="min-w-0 flex-1">
+        <Text className="text-sm text-zinc-400">{label}</Text>
+        <Text className="mt-1 text-sm font-medium text-zinc-100">{value || "Not set"}</Text>
+      </View>
+      <Text className={`text-sm font-semibold ${ready ? "text-emerald-300" : "text-yellow-200"}`}>{ready ? "Ready" : "Missing"}</Text>
+    </View>
   );
 }
 

@@ -1,3 +1,5 @@
+import { detectWorkdayTenantFromUrl } from "@applywizz/shared";
+
 import type { AppRole } from "../auth/model";
 
 export type WorkdayAccountStatus =
@@ -41,6 +43,22 @@ export type WorkdayAccountValidationErrors = {
   email?: string;
   tenant_key?: string;
   workday_base_url?: string;
+};
+
+export type WorkdayAccountReadinessInput = {
+  accounts: Pick<WorkdayAccountRecord, "account_status" | "tenant_key">[];
+  candidateEmail: string | null | undefined;
+  jobLinks: Array<{ url: string; workday_tenant_key: string | null }>;
+};
+
+export type WorkdayAccountReadiness = {
+  accountExists: boolean;
+  accountStatus: WorkdayAccountStatus | null;
+  candidateEmailExists: boolean;
+  jobLinkExists: boolean;
+  tenantDetected: boolean;
+  tenantKey: string | null;
+  workdayBaseUrl: string | null;
 };
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -99,4 +117,28 @@ export function isWorkdayAccountEmailMismatch(candidateEmail: string, accountEma
   }
 
   return candidateEmail.trim().toLowerCase() !== accountEmail.trim().toLowerCase();
+}
+
+export function buildWorkdayAccountReadiness(input: WorkdayAccountReadinessInput): WorkdayAccountReadiness {
+  const detected = input.jobLinks
+    .map((jobLink) => {
+      const parsed = detectWorkdayTenantFromUrl(jobLink.url);
+
+      return {
+        baseUrl: parsed.workday_base_url,
+        tenantKey: jobLink.workday_tenant_key || parsed.tenant_key
+      };
+    })
+    .find((item) => item.tenantKey);
+  const account = detected?.tenantKey ? input.accounts.find((item) => item.tenant_key === detected.tenantKey) : null;
+
+  return {
+    accountExists: Boolean(account),
+    accountStatus: account?.account_status ?? null,
+    candidateEmailExists: Boolean(input.candidateEmail?.trim()),
+    jobLinkExists: input.jobLinks.length > 0,
+    tenantDetected: Boolean(detected?.tenantKey),
+    tenantKey: detected?.tenantKey ?? null,
+    workdayBaseUrl: detected?.baseUrl ?? null
+  };
 }

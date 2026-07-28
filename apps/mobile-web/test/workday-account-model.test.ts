@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildWorkdayAccountReadiness,
   canManageWorkdayAccounts,
   isWorkdayAccountEmailMismatch,
   toWorkdayAccountPayload,
@@ -58,5 +59,23 @@ describe("Workday account model", () => {
   it("detects candidate email mismatch", () => {
     expect(isWorkdayAccountEmailMismatch("candidate@example.com", "candidate@example.com")).toBe(false);
     expect(isWorkdayAccountEmailMismatch("candidate@example.com", "other@example.com")).toBe(true);
+  });
+
+  it("builds account readiness from safe job link and account metadata", () => {
+    expect(
+      buildWorkdayAccountReadiness({
+        accounts: [{ account_status: "existing", tenant_key: "acme" }],
+        candidateEmail: "candidate@example.com",
+        jobLinks: [{ url: "https://acme.wd5.myworkdayjobs.com/jobs/job/Engineer", workday_tenant_key: null }]
+      })
+    ).toEqual({
+      accountExists: true,
+      accountStatus: "existing",
+      candidateEmailExists: true,
+      jobLinkExists: true,
+      tenantDetected: true,
+      tenantKey: "acme",
+      workdayBaseUrl: "https://acme.wd5.myworkdayjobs.com"
+    });
   });
 });

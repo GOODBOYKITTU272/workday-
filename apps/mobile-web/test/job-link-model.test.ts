@@ -17,6 +17,10 @@ describe("job link model", () => {
       url: "Enter a Workday job URL for V1."
     });
 
+    expect(validateJobLinkInput({ candidateId: "candidate-id", url: "https://workday.evil.com/jobs/1" })).toEqual({
+      url: "Enter a Workday job URL for V1."
+    });
+
     expect(validateJobLinkInput({ candidateId: "candidate-id", url: "https://company.wd1.myworkdayjobs.com/jobs/job/123" })).toEqual({});
   });
 

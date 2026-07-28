@@ -23,6 +23,6 @@ export const navigationItems: NavigationItem[] = [
   { id: "settings", href: "/settings", label: "Settings" }
 ];
 
-export function getActiveNavItem(pathname: string): NavigationItemId {
-  return navigationItems.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`))?.id ?? "dashboard";
+export function getActiveNavItem(pathname: string): NavigationItemId | null {
+  return navigationItems.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`))?.id ?? null;
 }

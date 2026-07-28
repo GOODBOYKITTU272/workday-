@@ -18,6 +18,6 @@ describe("navigation model", () => {
   test("selects the active sidebar item from the current path", () => {
     expect(getActiveNavItem("/runs")).toBe("runs");
     expect(getActiveNavItem("/manual-review/details")).toBe("manual-review");
-    expect(getActiveNavItem("/unknown")).toBe("dashboard");
+    expect(getActiveNavItem("/unknown")).toBeNull();
   });
 });

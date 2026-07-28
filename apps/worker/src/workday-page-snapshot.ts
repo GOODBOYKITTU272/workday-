@@ -88,6 +88,31 @@ export type WorkdayLandingActionDiscovery = {
   timestamp: string;
 };
 
+export type PostApplyLandingState =
+  | "already_applied"
+  | "application_started"
+  | "create_account_required"
+  | "job_unavailable"
+  | "login_required"
+  | "tenant_mismatch"
+  | "unknown"
+  | "untrusted_redirect";
+export type PostApplyLandingStateConfidence = WorkdayLandingPageConfidence;
+export type PostApplyLandingStateReason =
+  | "already_applied_signal"
+  | "create_account_signal"
+  | "job_unavailable_signal"
+  | "login_signal"
+  | "no_signal"
+  | "application_started_signal"
+  | "tenant_mismatch_after_apply"
+  | "untrusted_redirect_after_apply";
+export type PostApplyLandingStateClassification = {
+  confidence: PostApplyLandingStateConfidence;
+  post_apply_reason: PostApplyLandingStateReason;
+  post_apply_state: PostApplyLandingState;
+};
+
 export type SafeWorkdayPageSnapshot = {
   confidence: WorkdayTenantDetectionResult["confidence"];
   final_url: string;
@@ -413,6 +438,81 @@ export function classifyWorkdayLandingPage(finalUrl: string, pageTitle: string |
   return {
     confidence: "low",
     page_kind: "unknown"
+  };
+}
+
+export function classifyPostApplyLandingState(
+  snapshot: SafeWorkdayPageSnapshot,
+  discovery: WorkdayLandingActionDiscovery,
+  applyClick?: WorkdayApplyClickResult
+): PostApplyLandingStateClassification {
+  if (applyClick?.error_code === "TENANT_MISMATCH_AFTER_APPLY") {
+    return {
+      confidence: "high",
+      post_apply_reason: "tenant_mismatch_after_apply",
+      post_apply_state: "tenant_mismatch"
+    };
+  }
+
+  if (applyClick?.error_code === "UNTRUSTED_REDIRECT_AFTER_APPLY") {
+    return {
+      confidence: "high",
+      post_apply_reason: "untrusted_redirect_after_apply",
+      post_apply_state: "untrusted_redirect"
+    };
+  }
+
+  const urlTitleText = `${snapshot.final_url} ${snapshot.page_title ?? ""}`.toLowerCase();
+
+  if (snapshot.page_kind === "sign_in_page" || discovery.action_type === "sign_in_available") {
+    return {
+      confidence: snapshot.page_kind_confidence === "high" || discovery.confidence === "high" ? "high" : "medium",
+      post_apply_reason: "login_signal",
+      post_apply_state: "login_required"
+    };
+  }
+
+  if (snapshot.page_kind === "create_account_page" || discovery.action_type === "create_account_available") {
+    return {
+      confidence: snapshot.page_kind_confidence === "high" || discovery.confidence === "high" ? "high" : "medium",
+      post_apply_reason: "create_account_signal",
+      post_apply_state: "create_account_required"
+    };
+  }
+
+  if (snapshot.page_kind === "unavailable_page" || discovery.action_type === "job_unavailable") {
+    return {
+      confidence: "high",
+      post_apply_reason: "job_unavailable_signal",
+      post_apply_state: "job_unavailable"
+    };
+  }
+
+  if (snapshot.page_kind === "already_signed_in_page" || discovery.action_type === "already_applied") {
+    return {
+      confidence: "high",
+      post_apply_reason: "already_applied_signal",
+      post_apply_state: "already_applied"
+    };
+  }
+
+  if (
+    snapshot.page_kind === "job_page" &&
+    /application|questionnaire|assessment|application started|continue application|start application|begin application|application form/.test(
+      urlTitleText
+    )
+  ) {
+    return {
+      confidence: "high",
+      post_apply_reason: "application_started_signal",
+      post_apply_state: "application_started"
+    };
+  }
+
+  return {
+    confidence: snapshot.page_kind_confidence === "high" ? "low" : "low",
+    post_apply_reason: "no_signal",
+    post_apply_state: "unknown"
   };
 }
 

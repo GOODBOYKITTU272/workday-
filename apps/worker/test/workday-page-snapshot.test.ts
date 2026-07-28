@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   captureSafePageSnapshot,
   classifyWorkdayLandingPage,
+  classifyPostApplyLandingState,
   discoverWorkdayLandingActions,
   runWorkdayApplyClickDryRun,
   redactPageSnapshotForLogs,
@@ -440,6 +441,182 @@ describe("workday page snapshot foundation", () => {
     });
 
     expect(actions).toEqual(["button:click:/^\\s*apply(?: now| for this job)?\\s*$/i"]);
+  });
+
+  it("classifies a post-Apply sign-in page as login_required", () => {
+    expect(
+      classifyPostApplyLandingState(
+        {
+          confidence: "high",
+          final_url: "https://acme.wd5.myworkdayjobs.com/sign-in",
+          hostname: "acme.wd5.myworkdayjobs.com",
+          load_status: "loaded",
+          page_kind_confidence: "high",
+          page_kind: "sign_in_page",
+          page_title: "Workday Sign In",
+          tenant_key: "acme",
+          tenant_name: "acme",
+          timestamp: "2026-07-28T00:00:00.000Z",
+          workday_base_url: "https://acme.wd5.myworkdayjobs.com"
+        },
+        {
+          action_type: "sign_in_available",
+          confidence: "high",
+          safe_label_category: "sign_in",
+          selector_category: "button",
+          source: "selector_signal",
+          timestamp: "2026-07-28T00:00:00.000Z"
+        }
+      )
+    ).toEqual({
+      confidence: "high",
+      post_apply_reason: "login_signal",
+      post_apply_state: "login_required"
+    });
+  });
+
+  it("classifies a post-Apply create-account page as create_account_required", () => {
+    expect(
+      classifyPostApplyLandingState(
+        {
+          confidence: "high",
+          final_url: "https://acme.wd5.myworkdayjobs.com/create-account",
+          hostname: "acme.wd5.myworkdayjobs.com",
+          load_status: "loaded",
+          page_kind_confidence: "high",
+          page_kind: "create_account_page",
+          page_title: "Create Account",
+          tenant_key: "acme",
+          tenant_name: "acme",
+          timestamp: "2026-07-28T00:00:00.000Z",
+          workday_base_url: "https://acme.wd5.myworkdayjobs.com"
+        },
+        {
+          action_type: "create_account_available",
+          confidence: "high",
+          safe_label_category: "create_account",
+          selector_category: "button",
+          source: "selector_signal",
+          timestamp: "2026-07-28T00:00:00.000Z"
+        }
+      )
+    ).toEqual({
+      confidence: "high",
+      post_apply_reason: "create_account_signal",
+      post_apply_state: "create_account_required"
+    });
+  });
+
+  it("classifies a post-Apply already-applied page as already_applied", () => {
+    expect(
+      classifyPostApplyLandingState(
+        {
+          confidence: "high",
+          final_url: "https://acme.wd5.myworkdayjobs.com/apply/status",
+          hostname: "acme.wd5.myworkdayjobs.com",
+          load_status: "loaded",
+          page_kind_confidence: "high",
+          page_kind: "already_signed_in_page",
+          page_title: "Already Applied",
+          tenant_key: "acme",
+          tenant_name: "acme",
+          timestamp: "2026-07-28T00:00:00.000Z",
+          workday_base_url: "https://acme.wd5.myworkdayjobs.com"
+        },
+        {
+          action_type: "already_applied",
+          confidence: "high",
+          safe_label_category: "already_applied",
+          selector_category: "button",
+          source: "selector_signal",
+          timestamp: "2026-07-28T00:00:00.000Z"
+        }
+      )
+    ).toEqual({
+      confidence: "high",
+      post_apply_reason: "already_applied_signal",
+      post_apply_state: "already_applied"
+    });
+  });
+
+  it("classifies a high-confidence post-Apply application page as application_started", () => {
+    expect(
+      classifyPostApplyLandingState(
+        {
+          confidence: "high",
+          final_url: "https://acme.wd5.myworkdayjobs.com/External/job/Engineer/application",
+          hostname: "acme.wd5.myworkdayjobs.com",
+          load_status: "loaded",
+          page_kind_confidence: "high",
+          page_kind: "job_page",
+          page_title: "Application Details",
+          tenant_key: "acme",
+          tenant_name: "acme",
+          timestamp: "2026-07-28T00:00:00.000Z",
+          workday_base_url: "https://acme.wd5.myworkdayjobs.com"
+        },
+        {
+          action_type: "no_action_found",
+          confidence: "medium",
+          safe_label_category: "none",
+          selector_category: "none",
+          source: "url",
+          timestamp: "2026-07-28T00:00:00.000Z"
+        }
+      )
+    ).toEqual({
+      confidence: "high",
+      post_apply_reason: "application_started_signal",
+      post_apply_state: "application_started"
+    });
+  });
+
+  it("classifies a post-Apply untrusted redirect safely", () => {
+    expect(
+      classifyPostApplyLandingState(
+        {
+          confidence: "high",
+          final_url: "https://evil.com/phishing",
+          hostname: "evil.com",
+          load_status: "loaded",
+          page_kind_confidence: "high",
+          page_kind: "unknown",
+          page_title: "Redirected",
+          tenant_key: null,
+          tenant_name: null,
+          timestamp: "2026-07-28T00:00:00.000Z",
+          workday_base_url: null
+        },
+        {
+          action_type: "unknown",
+          confidence: "low",
+          safe_label_category: "none",
+          selector_category: "none",
+          source: "url",
+          timestamp: "2026-07-28T00:00:00.000Z"
+        },
+        {
+          action_type: "apply_available",
+          after_hostname: "evil.com",
+          after_page_kind: "untrusted_redirect",
+          after_page_kind_confidence: "low",
+          after_tenant_key: null,
+          after_tenant_name: null,
+          after_url: "https://evil.com/phishing",
+          after_workday_base_url: null,
+          before_page_kind: "job_page",
+          before_url: "https://acme.wd5.myworkdayjobs.com/External/job/Engineer",
+          click_result: "blocked",
+          error_code: "UNTRUSTED_REDIRECT_AFTER_APPLY",
+          reason: "untrusted_redirect_after_apply",
+          timestamp: "2026-07-28T00:00:00.000Z"
+        }
+      )
+    ).toEqual({
+      confidence: "high",
+      post_apply_reason: "untrusted_redirect_after_apply",
+      post_apply_state: "untrusted_redirect"
+    });
   });
 
   it("blocks Apply clicks when the expected tenant does not match the detected tenant", async () => {

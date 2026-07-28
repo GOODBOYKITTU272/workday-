@@ -5,6 +5,7 @@ import {
   type WorkdayApplyClickResult,
   type WorkdayLandingActionDiscovery,
   type WorkdayPageOpenCheckResult,
+  classifyPostApplyLandingState,
   runWorkdayApplyClickDryRun
 } from "./workday-page-snapshot.js";
 
@@ -320,6 +321,7 @@ async function finishApplyClickSuccess(
   const metadata = {
     ...buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
     apply_click: buildSafeApplyClickMetadata(applyClick),
+    post_apply_state: buildSafePostApplyStateMetadata(classifyPostApplyLandingState(snapshot, discovery, applyClick)),
     landing_action: discovery
   };
   const completedAt = getNow(deps);
@@ -363,6 +365,7 @@ async function finishApplyClickBlocked(
   const metadata = {
     ...buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
     apply_click: buildSafeApplyClickMetadata(applyClick),
+    post_apply_state: buildSafePostApplyStateMetadata(classifyPostApplyLandingState(snapshot, discovery, applyClick)),
     landing_action: discovery
   };
   const completedAt = getNow(deps);
@@ -550,6 +553,16 @@ function buildSafeApplyClickMetadata(applyClick: WorkdayApplyClickResult) {
     error_code: applyClick.error_code,
     reason: applyClick.reason,
     timestamp: applyClick.timestamp
+  };
+}
+
+function buildSafePostApplyStateMetadata(
+  postApplyState: ReturnType<typeof classifyPostApplyLandingState>
+) {
+  return {
+    confidence: postApplyState.confidence,
+    post_apply_reason: postApplyState.post_apply_reason,
+    post_apply_state: postApplyState.post_apply_state
   };
 }
 

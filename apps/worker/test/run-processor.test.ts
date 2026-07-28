@@ -234,6 +234,10 @@ describe("application run processor", () => {
             reason: "clicked"
           }),
           final_tenant_key: "acme",
+          post_apply_state: expect.objectContaining({
+            post_apply_reason: "no_signal",
+            post_apply_state: "unknown"
+          }),
           tenant_match: true
         }),
         step_name: "workday_apply_click",

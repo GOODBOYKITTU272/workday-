@@ -7,6 +7,10 @@ const migrationSql = readFileSync(
   fileURLToPath(new URL("../migrations/20260727180000_phase_2_database_schema.sql", import.meta.url)),
   "utf8"
 );
+const phaseSevenMigrationSql = readFileSync(
+  fileURLToPath(new URL("../migrations/20260728000300_allow_viewers_read_safe_zoho_metadata.sql", import.meta.url)),
+  "utf8"
+);
 
 function grantedColumnsFor(tableName: string) {
   const match = migrationSql.match(
@@ -93,5 +97,13 @@ describe("Phase 2 migration security gates", () => {
       "with check (public.is_admin() or actor_user_id = auth.uid())"
     );
     expect(migrationSql).toContain("public.prevent_non_admin_question_bank_approval()");
+  });
+
+  it("allows viewers to read only safe Zoho mailbox metadata through RLS", () => {
+    expect(phaseSevenMigrationSql).toContain("drop policy if exists read_zoho_mailboxes on public.zoho_mailboxes");
+    expect(phaseSevenMigrationSql).toMatch(/create policy read_zoho_mailboxes\s+on public\.zoho_mailboxes\s+for select\s+using \(public\.can_view\(\)\)/);
+    expect(phaseSevenMigrationSql).not.toContain("write_zoho_mailboxes");
+    expect(phaseSevenMigrationSql).not.toContain("access_token_encrypted");
+    expect(phaseSevenMigrationSql).not.toContain("refresh_token_encrypted");
   });
 });

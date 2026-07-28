@@ -1,7 +1,7 @@
 import { Link, Redirect, type Href, useLocalSearchParams } from "expo-router";
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, Text, TextInput, View } from "react-native";
 
 import { useAuth } from "../../src/auth/AuthProvider";
 import type { CandidateRecord } from "../../src/candidates/model";
@@ -15,21 +15,32 @@ import {
   validateResumeFile
 } from "../../src/resumes/model";
 import { supabase } from "../../src/auth/supabase";
+import type { ZohoConnectionStatus, ZohoMailboxInput, ZohoMailboxRecord, ZohoMailboxValidationErrors } from "../../src/zoho/model";
+import { canManageZohoMailbox, isMailboxEmailMismatch, toZohoMailboxPayload, validateZohoMailboxInput } from "../../src/zoho/model";
 
 const candidateColumns =
   "id,created_by,full_name,email,phone,location,target_role,years_experience,status,created_at,updated_at";
 const resumeColumns =
   "id,candidate_id,storage_bucket,storage_path,file_name,file_type,file_size_bytes,is_active,uploaded_by,notes,created_at,updated_at";
+const zohoColumns =
+  "id,candidate_id,email,zoho_account_id,token_expires_at,connection_status,last_otp_check_at,last_success_at,last_error,created_at,updated_at";
+const zohoStatuses: ZohoConnectionStatus[] = ["not_connected", "connected", "expired", "failed", "revoked"];
 
 export default function CandidateDetailScreen() {
   const { candidateId } = useLocalSearchParams<{ candidateId: string }>();
   const { profile, role } = useAuth();
   const canEdit = canManageResumes(role);
+  const canEditZoho = canManageZohoMailbox(role);
   const [candidate, setCandidate] = useState<CandidateRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
   const [resumes, setResumes] = useState<CandidateResumeRecord[]>([]);
+  const [zohoError, setZohoError] = useState<string | null>(null);
+  const [zohoForm, setZohoForm] = useState<ZohoMailboxInput>({ candidateId: candidateId ?? "", connection_status: "not_connected", email: "" });
+  const [zohoFormErrors, setZohoFormErrors] = useState<ZohoMailboxValidationErrors>({});
+  const [zohoMailbox, setZohoMailbox] = useState<ZohoMailboxRecord | null>(null);
+  const [isSavingZoho, setIsSavingZoho] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   const loadDetail = useCallback(async () => {
@@ -42,16 +53,28 @@ export default function CandidateDetailScreen() {
     setIsLoading(true);
     setError(null);
 
-    const [{ data: candidateData, error: candidateError }, { data: resumeData, error: resumeError }] = await Promise.all([
+    const [{ data: candidateData, error: candidateError }, { data: resumeData, error: resumeError }, { data: zohoData, error: zohoFetchError }] = await Promise.all([
       supabase.from("candidates").select(candidateColumns).eq("id", candidateId).single(),
-      supabase.from("candidate_resumes").select(resumeColumns).eq("candidate_id", candidateId).order("created_at", { ascending: false })
+      supabase.from("candidate_resumes").select(resumeColumns).eq("candidate_id", candidateId).order("created_at", { ascending: false }),
+      supabase.from("zoho_mailboxes").select(zohoColumns).eq("candidate_id", candidateId).order("created_at", { ascending: false }).limit(1).maybeSingle()
     ]);
 
     if (candidateError) {
       setError(candidateError.message);
       setCandidate(null);
     } else {
-      setCandidate(candidateData as CandidateRecord);
+      const nextCandidate = candidateData as CandidateRecord;
+      setCandidate(nextCandidate);
+
+      if (!zohoData) {
+        setZohoForm({
+          candidateId,
+          connection_status: "not_connected",
+          email: nextCandidate.email,
+          last_error: "",
+          zoho_account_id: ""
+        });
+      }
     }
 
     if (resumeError) {
@@ -59,6 +82,25 @@ export default function CandidateDetailScreen() {
       setResumes([]);
     } else {
       setResumes((resumeData ?? []) as CandidateResumeRecord[]);
+    }
+
+    if (zohoFetchError) {
+      setZohoError(zohoFetchError.message);
+      setZohoMailbox(null);
+    } else {
+      const nextMailbox = zohoData as ZohoMailboxRecord | null;
+      setZohoError(null);
+      setZohoMailbox(nextMailbox);
+
+      if (nextMailbox) {
+        setZohoForm({
+          candidateId,
+          connection_status: nextMailbox.connection_status,
+          email: nextMailbox.email,
+          last_error: nextMailbox.last_error ?? "",
+          zoho_account_id: nextMailbox.zoho_account_id ?? ""
+        });
+      }
     }
 
     setIsLoading(false);
@@ -128,6 +170,42 @@ export default function CandidateDetailScreen() {
     setIsUploading(false);
   }
 
+  function updateZohoField<K extends keyof ZohoMailboxInput>(field: K, value: ZohoMailboxInput[K]) {
+    setZohoForm((current) => ({ ...current, [field]: value }));
+    setZohoFormErrors((current) => ({ ...current, [field]: undefined }));
+  }
+
+  async function saveZohoMailbox() {
+    if (!candidateId || !canEditZoho) {
+      return;
+    }
+
+    const nextForm = { ...zohoForm, candidateId };
+    const nextErrors = validateZohoMailboxInput(nextForm);
+    setZohoFormErrors(nextErrors);
+
+    if (Object.keys(nextErrors).length > 0) {
+      return;
+    }
+
+    setIsSavingZoho(true);
+    setZohoError(null);
+
+    const payload = toZohoMailboxPayload(nextForm);
+    const request = zohoMailbox
+      ? supabase.from("zoho_mailboxes").update(payload).eq("id", zohoMailbox.id)
+      : supabase.from("zoho_mailboxes").insert(payload);
+    const { error: saveError } = await request;
+
+    if (saveError) {
+      setZohoError(saveError.message);
+    } else {
+      await loadDetail();
+    }
+
+    setIsSavingZoho(false);
+  }
+
   async function setActiveResume(resumeId: string) {
     if (!candidateId || !canEdit) {
       return;
@@ -187,10 +265,12 @@ export default function CandidateDetailScreen() {
             </View>
 
             <View className="gap-3">
-              {["Overview", "Resumes", "Job Links", "Runs", "Manual Review"].map((section) => (
+              {["Overview", "Resumes", "Zoho Email", "Job Links", "Runs", "Manual Review"].map((section) => (
                 <View className="rounded-lg border border-border bg-card p-5" key={section}>
                   <Text className="text-lg font-semibold text-zinc-100">{section}</Text>
-                  {section === "Resumes" ? (
+                  {section === "Overview" ? (
+                    <OverviewSection candidate={candidate} />
+                  ) : section === "Resumes" ? (
                     <ResumeSection
                       canEdit={canEdit}
                       isUploading={isUploading}
@@ -198,6 +278,18 @@ export default function CandidateDetailScreen() {
                       onSetActive={setActiveResume}
                       resumes={resumes}
                       uploadError={uploadError}
+                    />
+                  ) : section === "Zoho Email" ? (
+                    <ZohoSection
+                      canEdit={canEditZoho}
+                      candidate={candidate}
+                      form={zohoForm}
+                      formErrors={zohoFormErrors}
+                      isSaving={isSavingZoho}
+                      mailbox={zohoMailbox}
+                      onSave={saveZohoMailbox}
+                      onUpdate={updateZohoField}
+                      zohoError={zohoError}
                     />
                   ) : (
                     <Text className="mt-2 text-sm leading-6 text-zinc-400">Placeholder for a later approved phase.</Text>
@@ -212,11 +304,31 @@ export default function CandidateDetailScreen() {
   );
 }
 
+function OverviewSection({ candidate }: { candidate: CandidateRecord }) {
+  return (
+    <View className="mt-4 gap-2">
+      <DetailRow label="Candidate Email" value={candidate.email} />
+      <DetailRow label="Target Role" value={candidate.target_role} />
+      <DetailRow label="Status" value={candidate.status} />
+    </View>
+  );
+}
+
 function DetailRow({ label, value }: { label: string; value: string | null }) {
   return (
     <View className="flex-row justify-between gap-4">
       <Text className="text-sm text-zinc-500">{label}</Text>
       <Text className="text-sm font-medium text-zinc-100">{value || "Not set"}</Text>
+    </View>
+  );
+}
+
+function Field({ children, error, label }: { children: ReactNode; error?: string; label: string }) {
+  return (
+    <View className="gap-2">
+      <Text className="text-sm font-medium text-zinc-300">{label}</Text>
+      {children}
+      {error ? <Text className="text-sm text-red-300">{error}</Text> : null}
     </View>
   );
 }
@@ -279,5 +391,130 @@ function ResumeSection({
         </View>
       )}
     </View>
+  );
+}
+
+function ZohoSection({
+  canEdit,
+  candidate,
+  form,
+  formErrors,
+  isSaving,
+  mailbox,
+  onSave,
+  onUpdate,
+  zohoError
+}: {
+  canEdit: boolean;
+  candidate: CandidateRecord;
+  form: ZohoMailboxInput;
+  formErrors: ZohoMailboxValidationErrors;
+  isSaving: boolean;
+  mailbox: ZohoMailboxRecord | null;
+  onSave: () => Promise<void>;
+  onUpdate: <K extends keyof ZohoMailboxInput>(field: K, value: ZohoMailboxInput[K]) => void;
+  zohoError: string | null;
+}) {
+  const mailboxEmail = mailbox?.email ?? form.email;
+  const hasMismatch = isMailboxEmailMismatch(candidate.email, mailboxEmail);
+
+  return (
+    <View className="mt-4 gap-4">
+      <View className="gap-3 md:flex-row md:items-center md:justify-between">
+        <View>
+          <Text className="text-sm text-zinc-400">Candidate email</Text>
+          <Text className="mt-1 text-base font-semibold text-zinc-100">{candidate.email}</Text>
+        </View>
+        <StatusBadge status={mailbox?.connection_status ?? "not_connected"} />
+      </View>
+
+      {hasMismatch ? (
+        <View className="rounded-md border border-yellow-300 p-4">
+          <Text className="text-sm font-semibold text-yellow-200">Mailbox email does not match candidate email.</Text>
+          <Text className="mt-1 text-sm text-zinc-400">Workday accounts should use the candidate email.</Text>
+        </View>
+      ) : null}
+
+      {zohoError ? <Text className="text-sm text-red-300">{zohoError}</Text> : null}
+
+      {canEdit ? (
+        <View className="gap-4">
+          <Field label="Zoho Mailbox Email" error={formErrors.email}>
+            <TextInput
+              autoCapitalize="none"
+              className="rounded-md border border-border bg-zinc-950 px-3 py-3 text-base text-zinc-100"
+              inputMode="email"
+              onChangeText={(value) => onUpdate("email", value)}
+              placeholder="candidate@example.com"
+              placeholderTextColor="#71717a"
+              value={form.email}
+            />
+          </Field>
+          <Field label="Zoho Account ID">
+            <TextInput
+              className="rounded-md border border-border bg-zinc-950 px-3 py-3 text-base text-zinc-100"
+              onChangeText={(value) => onUpdate("zoho_account_id", value)}
+              placeholder="Optional"
+              placeholderTextColor="#71717a"
+              value={form.zoho_account_id}
+            />
+          </Field>
+          <View className="gap-2">
+            <Text className="text-sm font-medium text-zinc-300">Connection Status</Text>
+            <View className="flex-row flex-wrap gap-2">
+              {zohoStatuses.map((status) => {
+                const isActive = form.connection_status === status;
+
+                return (
+                  <Pressable
+                    className={`rounded-md border px-3 py-2 ${isActive ? "border-zinc-100 bg-zinc-100" : "border-border bg-transparent"}`}
+                    key={status}
+                    onPress={() => onUpdate("connection_status", status)}
+                  >
+                    <Text className={`text-sm font-medium ${isActive ? "text-zinc-950" : "text-zinc-300"}`}>{status}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+          <Field label="Last Error">
+            <TextInput
+              className="rounded-md border border-border bg-zinc-950 px-3 py-3 text-base text-zinc-100"
+              multiline
+              onChangeText={(value) => onUpdate("last_error", value)}
+              placeholder="Optional status note"
+              placeholderTextColor="#71717a"
+              value={form.last_error}
+            />
+          </Field>
+          <Pressable className="min-h-11 items-center justify-center rounded-md bg-zinc-100 px-4 disabled:opacity-50" disabled={isSaving} onPress={() => void onSave()}>
+            <Text className="text-sm font-semibold text-zinc-950">{isSaving ? "Saving..." : mailbox ? "Save Zoho Metadata" : "Add Zoho Mailbox"}</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <View className="gap-2">
+          <Text className="text-sm text-zinc-400">Viewer role can inspect mailbox metadata but cannot edit it.</Text>
+          <DetailRow label="Mailbox Email" value={mailbox?.email ?? null} />
+          <DetailRow label="Zoho Account ID" value={mailbox?.zoho_account_id ?? null} />
+          <DetailRow label="Last Success" value={mailbox?.last_success_at ?? null} />
+          <DetailRow label="Last Error" value={mailbox?.last_error ?? null} />
+        </View>
+      )}
+    </View>
+  );
+}
+
+function StatusBadge({ status }: { status: ZohoConnectionStatus }) {
+  const isConnected = status === "connected";
+  const isWarning = status === "expired" || status === "failed" || status === "revoked";
+
+  return (
+    <Text
+      className={`rounded-md border px-3 py-2 text-sm font-medium ${
+        isConnected ? "border-emerald-300 text-emerald-200" : isWarning ? "border-yellow-300 text-yellow-200" : "border-border text-zinc-300"
+      }`}
+    >
+      {status}
+    </Text>
   );
 }

@@ -26,3 +26,12 @@ Service-role and Zoho client secret values belong only in the worker/runtime env
 Phase 11 stores only encrypted Zoho token values in `public.zoho_mailboxes`. It does not read emails, parse OTPs, call Workday, use Playwright, claim runs, approve submit, or submit applications.
 
 Phase 12 adds server-side helpers for Zoho OAuth authorization URLs, signed state validation, callback validation, and authorization-code exchange into encrypted mailbox token updates. It still does not read emails, parse OTPs, call Workday, use Playwright, claim runs, approve submit, or submit applications.
+
+Phase 13 adds worker-only Zoho Mail API helper structure for recent message search plus mocked-parser coverage for Workday verification codes and verification links. It does not write OTP logs, read real mail in tests, call Workday, use Playwright, claim runs, approve submit, or submit applications.
+
+Zoho Mail API scopes to verify before production:
+
+```text
+ZohoMail.messages.READ
+ZohoMail.accounts.READ
+```

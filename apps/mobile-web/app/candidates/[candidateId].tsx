@@ -732,7 +732,7 @@ function JobLinksSection({
     <View className="mt-4 gap-4">
       {canEdit ? (
         <View className="gap-4">
-          <Text className="text-sm text-zinc-400">Paste Workday job links for this candidate. Automation runs are created in a later phase.</Text>
+          <Text className="text-sm text-zinc-400">Paste Workday job links for this candidate, then queue dry-runs from the Runs section.</Text>
           <Field label="Workday Job URL" error={formErrors.url}>
             <TextInput
               autoCapitalize="none"

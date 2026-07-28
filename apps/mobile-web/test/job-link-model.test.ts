@@ -24,6 +24,21 @@ describe("job link model", () => {
     expect(validateJobLinkInput({ candidateId: "candidate-id", url: "https://company.wd1.myworkdayjobs.com/jobs/job/123" })).toEqual({});
   });
 
+  test("accepts the internal dry-run Workday links", () => {
+    expect(
+      validateJobLinkInput({
+        candidateId: "candidate-id",
+        url: "https://wd5.myworkdaysite.com/recruiting/sysco/syscocareers/job/Work-From-Home/Senior-Analyst--Workday-Functional-Security_R259959-1/apply"
+      })
+    ).toEqual({});
+    expect(
+      validateJobLinkInput({
+        candidateId: "candidate-id",
+        url: "https://pretiumenterpriseservices.wd1.myworkdayjobs.com/PR/job/Atlanta-GA/Senior-Financial-Analyst_JR116068"
+      })
+    ).toEqual({});
+  });
+
   test("normalizes job URLs for duplicate detection", () => {
     expect(normalizeJobUrl(" HTTPS://Company.WD1.MyWorkdayJobs.com/jobs/job/123/?utm_source=test#top ")).toBe(
       "https://company.wd1.myworkdayjobs.com/jobs/job/123"

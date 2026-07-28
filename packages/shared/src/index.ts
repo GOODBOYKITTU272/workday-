@@ -22,7 +22,7 @@ export type WorkdayTenantDetectionResult = {
   workday_base_url: string | null;
 };
 
-const trustedWorkdayRootHosts = ["workday.com", "myworkday.com", "myworkdayjobs.com"];
+const trustedWorkdayRootHosts = ["workday.com", "myworkday.com", "myworkdayjobs.com", "myworkdaysite.com"];
 
 export function isTrustedWorkdayHost(url: URL) {
   const hostname = url.hostname.toLowerCase();
@@ -89,6 +89,12 @@ function tenantKeyFromWorkdayUrl(url: URL) {
     return firstPathPart(url);
   }
 
+  if (hostname.endsWith(".myworkdaysite.com") && /^wd\d+$/.test(firstHostPart)) {
+    const pathParts = url.pathname.split("/").filter(Boolean);
+
+    return pathParts[0] === "recruiting" ? (pathParts[1] ?? null) : (pathParts[0] ?? null);
+  }
+
   if (hostname.endsWith(".workday.com") && /^wd\d+$/.test(firstHostPart)) {
     return firstPathPart(url);
   }
@@ -98,6 +104,12 @@ function tenantKeyFromWorkdayUrl(url: URL) {
 
 function workdayBaseUrl(url: URL, tenantKey: string) {
   const firstHostPart = url.hostname.split(".")[0] ?? "";
+
+  if (/^wd\d+$/.test(firstHostPart) && url.hostname.endsWith(".myworkdaysite.com")) {
+    const pathParts = url.pathname.split("/").filter(Boolean);
+
+    return pathParts[0] === "recruiting" ? `${url.origin}/recruiting/${tenantKey}` : `${url.origin}/${tenantKey}`;
+  }
 
   if (/^wd\d+$/.test(firstHostPart)) {
     return `${url.origin}/${tenantKey}`;

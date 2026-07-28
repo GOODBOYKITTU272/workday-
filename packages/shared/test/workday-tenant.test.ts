@@ -26,11 +26,25 @@ describe("Workday tenant URL detection", () => {
       tenant_key: "acme",
       workday_base_url: "https://wd3.myworkday.com/acme"
     });
+
+    expect(
+      detectWorkdayTenantFromUrl(
+        "https://wd5.myworkdaysite.com/recruiting/sysco/syscocareers/job/Work-From-Home/Senior-Analyst--Workday-Functional-Security_R259959-1/apply"
+      )
+    ).toMatchObject({
+      confidence: "high",
+      is_workday_url: true,
+      normalized_url:
+        "https://wd5.myworkdaysite.com/recruiting/sysco/syscocareers/job/Work-From-Home/Senior-Analyst--Workday-Functional-Security_R259959-1/apply",
+      tenant_key: "sysco",
+      workday_base_url: "https://wd5.myworkdaysite.com/recruiting/sysco"
+    });
   });
 
   it("recognizes trusted Workday hostnames without substring matching", () => {
     expect(isTrustedWorkdayHost(new URL("https://workday.com/jobs"))).toBe(true);
     expect(isTrustedWorkdayHost(new URL("https://wd1.myworkdayjobs.com/jobs"))).toBe(true);
+    expect(isTrustedWorkdayHost(new URL("https://wd5.myworkdaysite.com/recruiting/sysco"))).toBe(true);
     expect(isTrustedWorkdayHost(new URL("https://workday.evil.com/verify"))).toBe(false);
     expect(isTrustedWorkdayHost(new URL("https://evil-workday.com/confirm"))).toBe(false);
   });

@@ -14,10 +14,38 @@ export type WorkdayPageKind =
   | "unknown";
 export type WorkdayPageLoadStatus = "error" | "loaded";
 export type WorkdayLandingPageConfidence = "high" | "low" | "medium";
+export type WorkdayLandingActionType =
+  | "already_applied"
+  | "already_signed_in"
+  | "apply_available"
+  | "create_account_available"
+  | "job_unavailable"
+  | "no_action_found"
+  | "sign_in_available"
+  | "unknown";
+export type WorkdayLandingActionSource = "selector_signal" | "title" | "url";
+export type WorkdayLandingActionLabelCategory =
+  | "already_applied"
+  | "already_signed_in"
+  | "apply"
+  | "create_account"
+  | "job_unavailable"
+  | "none"
+  | "sign_in";
+export type WorkdayLandingActionSelectorCategory = "button" | "link" | "none";
 
 export type WorkdayLandingPageClassification = {
   confidence: WorkdayLandingPageConfidence;
   page_kind: WorkdayPageKind;
+};
+
+export type WorkdayLandingActionDiscovery = {
+  action_type: WorkdayLandingActionType;
+  confidence: WorkdayLandingPageConfidence;
+  safe_label_category: WorkdayLandingActionLabelCategory;
+  selector_category: WorkdayLandingActionSelectorCategory;
+  source: WorkdayLandingActionSource;
+  timestamp: string;
 };
 
 export type SafeWorkdayPageSnapshot = {
@@ -46,7 +74,7 @@ export type WorkdayPageOpenCheckResult =
       url: string;
     }
   | { ok: false; error: string; error_code: "invalid_url" | "page_open_failed" | "untrusted_host" | "unsupported_protocol"; url: string }
-  | { ok: true; snapshot: SafeWorkdayPageSnapshot; url: string };
+  | { discovery: WorkdayLandingActionDiscovery; ok: true; snapshot: SafeWorkdayPageSnapshot; url: string };
 
 type WorkdayPageBlockedRedirectResult = {
   error: string;
@@ -61,6 +89,7 @@ type WorkdayPageBlockedRedirectResult = {
 
 type PageLike = {
   goto: (url: string, options?: { timeout?: number; waitUntil?: "commit" | "domcontentloaded" | "load" | "networkidle" }) => Promise<unknown>;
+  getByRole: (role: "button" | "link", options: { name: RegExp | string }) => { isVisible: () => Promise<boolean> };
   title: () => Promise<string>;
   url: () => string;
   close: () => Promise<void>;
@@ -104,14 +133,17 @@ export async function openTrustedWorkdayJobPage(
 
     const snapshotOrBlocked = await captureSafePageSnapshot(page, finalValidation.detection, options?.now?.());
 
-    if ("ok" in snapshotOrBlocked) {
+    if (isBlockedRedirectResult(snapshotOrBlocked)) {
       return snapshotOrBlocked;
     }
 
+    const snapshot = snapshotOrBlocked;
+
     return {
+      discovery: await discoverWorkdayLandingActions(page, snapshot, options?.now?.()),
       ok: true,
-      snapshot: snapshotOrBlocked,
-      url: snapshotOrBlocked.final_url
+      snapshot,
+      url: snapshot.final_url
     } satisfies WorkdayPageOpenCheckResult;
   } catch {
     return {
@@ -266,6 +298,110 @@ export function classifyWorkdayLandingPage(finalUrl: string, pageTitle: string |
   };
 }
 
+export async function discoverWorkdayLandingActions(
+  page: Pick<PageLike, "getByRole" | "title" | "url">,
+  snapshot: SafeWorkdayPageSnapshot,
+  timestamp = new Date().toISOString()
+): Promise<WorkdayLandingActionDiscovery> {
+  const urlTitleText = `${snapshot.final_url} ${snapshot.page_title ?? ""}`.toLowerCase();
+
+  const selectorSignals: Array<{
+    action_type: Exclude<WorkdayLandingActionType, "no_action_found" | "unknown">;
+    buttonPatterns: RegExp[];
+    confidence: WorkdayLandingPageConfidence;
+    linkPatterns?: RegExp[];
+    safe_label_category: WorkdayLandingActionLabelCategory;
+  }> = [
+    {
+      action_type: "job_unavailable",
+      buttonPatterns: [/\bjob unavailable\b/i, /\bunavailable\b/i, /\bno longer available\b/i, /\brequisition filled\b/i, /\bposition filled\b/i],
+      confidence: "high",
+      linkPatterns: [/\bjob unavailable\b/i, /\bunavailable\b/i, /\bno longer available\b/i],
+      safe_label_category: "job_unavailable"
+    },
+    {
+      action_type: "already_applied",
+      buttonPatterns: [/\balready applied\b/i, /\bapplication submitted\b/i, /\bapplication complete\b/i],
+      confidence: "high",
+      linkPatterns: [/\balready applied\b/i, /\bapplication submitted\b/i],
+      safe_label_category: "already_applied"
+    },
+    {
+      action_type: "already_signed_in",
+      buttonPatterns: [/\balready signed in\b/i, /\bmy applications\b/i, /\bcandidate home\b/i, /\bdashboard\b/i],
+      confidence: "high",
+      linkPatterns: [/\balready signed in\b/i, /\bmy applications\b/i, /\bcandidate home\b/i, /\bdashboard\b/i],
+      safe_label_category: "already_signed_in"
+    },
+    {
+      action_type: "apply_available",
+      buttonPatterns: [/\bapply\b/i, /\bapply now\b/i, /\bstart application\b/i, /\bstart applying\b/i],
+      confidence: "high",
+      linkPatterns: [/\bapply\b/i, /\bapply now\b/i, /\bstart application\b/i],
+      safe_label_category: "apply"
+    },
+    {
+      action_type: "sign_in_available",
+      buttonPatterns: [/\bsign in\b/i, /\bsign on\b/i, /\blog in\b/i, /\blogin\b/i, /\bauthenticate\b/i],
+      confidence: "high",
+      linkPatterns: [/\bsign in\b/i, /\bsign on\b/i, /\blog in\b/i, /\blogin\b/i],
+      safe_label_category: "sign_in"
+    },
+    {
+      action_type: "create_account_available",
+      buttonPatterns: [/\bcreate account\b/i, /\bregister\b/i, /\bsign up\b/i, /\bjoin now\b/i],
+      confidence: "high",
+      linkPatterns: [/\bcreate account\b/i, /\bregister\b/i, /\bsign up\b/i],
+      safe_label_category: "create_account"
+    }
+  ];
+
+  for (const signal of selectorSignals) {
+    if (
+      (await hasVisibleSignal(page, "button", signal.buttonPatterns)) ||
+      (signal.linkPatterns ? await hasVisibleSignal(page, "link", signal.linkPatterns) : false)
+    ) {
+      return {
+        action_type: signal.action_type,
+        confidence: signal.confidence,
+        safe_label_category: signal.safe_label_category,
+        selector_category: (await hasVisibleSignal(page, "button", signal.buttonPatterns)) ? "button" : "link",
+        source: "selector_signal",
+        timestamp
+      };
+    }
+  }
+
+  if (/unavailable|no longer available|requisition filled|position filled|closed/.test(urlTitleText)) {
+    return buildDiscovery("job_unavailable", "high", "job_unavailable", "title", timestamp);
+  }
+
+  if (/already applied|application submitted|application complete/.test(urlTitleText)) {
+    return buildDiscovery("already_applied", "high", "already_applied", "title", timestamp);
+  }
+
+  if (/already signed in|my applications|candidate home|dashboard/.test(urlTitleText)) {
+    return buildDiscovery("already_signed_in", snapshot.page_kind === "already_signed_in_page" ? "medium" : "low", "already_signed_in", "url", timestamp);
+  }
+
+  switch (snapshot.page_kind) {
+    case "sign_in_page":
+      return buildDiscovery("sign_in_available", snapshot.page_kind_confidence === "high" ? "high" : "medium", "sign_in", "title", timestamp);
+    case "create_account_page":
+      return buildDiscovery("create_account_available", snapshot.page_kind_confidence === "high" ? "high" : "medium", "create_account", "title", timestamp);
+    case "already_signed_in_page":
+      return buildDiscovery("already_signed_in", snapshot.page_kind_confidence === "high" ? "high" : "medium", "already_signed_in", "title", timestamp);
+    case "unavailable_page":
+      return buildDiscovery("job_unavailable", "high", "job_unavailable", "title", timestamp);
+    case "job_page":
+      return buildDiscovery("no_action_found", snapshot.page_kind_confidence === "high" ? "medium" : "low", "none", "url", timestamp);
+    case "error_page":
+      return buildDiscovery("unknown", "low", "none", "title", timestamp);
+    default:
+      return buildDiscovery("unknown", "low", "none", "url", timestamp);
+  }
+}
+
 function validateTrustedWorkdayJobUrl(
   rawUrl: string
 ):
@@ -388,6 +524,43 @@ function blockedRedirect(finalUrl: string, error: string): {
     page_kind: "untrusted_redirect",
     url: finalUrl
   };
+}
+
+function buildDiscovery(
+  actionType: WorkdayLandingActionType,
+  confidence: WorkdayLandingPageConfidence,
+  safeLabelCategory: WorkdayLandingActionLabelCategory,
+  source: WorkdayLandingActionSource,
+  timestamp: string
+): WorkdayLandingActionDiscovery {
+  return {
+    action_type: actionType,
+    confidence,
+    safe_label_category: safeLabelCategory,
+    selector_category: "none",
+    source,
+    timestamp
+  };
+}
+
+async function hasVisibleSignal(page: Pick<PageLike, "getByRole">, role: "button" | "link", patterns: RegExp[]) {
+  for (const pattern of patterns) {
+    try {
+      if (await page.getByRole(role, { name: pattern }).isVisible()) {
+        return true;
+      }
+    } catch {
+      // Ignore missing selectors and keep discovery conservative.
+    }
+  }
+
+  return false;
+}
+
+function isBlockedRedirectResult(
+  result: SafeWorkdayPageSnapshot | WorkdayPageBlockedRedirectResult
+): result is WorkdayPageBlockedRedirectResult {
+  return "ok" in result && result.ok === false && result.error_code === "UNTRUSTED_REDIRECT";
 }
 
 function isErrorWorkdayPage(haystack: string) {

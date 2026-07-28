@@ -59,6 +59,14 @@ function createDeps(overrides: Partial<RunProcessorDeps> = {}) {
     }),
     openWorkdayPage: async (): Promise<WorkdayPageOpenCheckResult> => ({
       ok: true,
+      discovery: {
+        action_type: "apply_available",
+        confidence: "high",
+        safe_label_category: "apply",
+        selector_category: "button",
+        source: "selector_signal",
+        timestamp: "2026-07-28T00:00:00.000Z"
+      },
       snapshot: trustedSnapshot,
       url: trustedSnapshot.final_url
     }),
@@ -145,6 +153,13 @@ describe("application run processor", () => {
         metadata: expect.objectContaining({
           expected_tenant_known: true,
           final_tenant_key: "acme",
+          landing_action: expect.objectContaining({
+            action_type: "apply_available",
+            confidence: "high",
+            safe_label_category: "apply",
+            selector_category: "button",
+            source: "selector_signal"
+          }),
           page_kind_confidence: "high",
           tenant_key: "acme",
           tenant_match: true
@@ -167,7 +182,7 @@ describe("application run processor", () => {
       })
     );
     expect(JSON.stringify({ automationLogs, runSteps, runUpdates })).not.toMatch(
-      /approved_for_submit|submitted_at|access_token|refresh_token|password|otp/i
+      /approved_for_submit|submitted_at|access_token|refresh_token|password|otp|Apply now|Sign In|Create Account/i
     );
   });
 
@@ -175,6 +190,14 @@ describe("application run processor", () => {
     const { automationLogs, deps, runSteps, runUpdates } = createDeps({
       openWorkdayPage: async (jobUrl): Promise<WorkdayPageOpenCheckResult> => ({
         ok: true,
+        discovery: {
+          action_type: "already_signed_in",
+          confidence: "high",
+          safe_label_category: "already_signed_in",
+          selector_category: "button",
+          source: "selector_signal",
+          timestamp: "2026-07-28T00:00:00.000Z"
+        },
         snapshot: {
           ...trustedSnapshot,
           final_url: jobUrl,
@@ -261,6 +284,14 @@ describe("application run processor", () => {
     const { deps, runSteps } = createDeps({
       openWorkdayPage: async (jobUrl): Promise<WorkdayPageOpenCheckResult> => ({
         ok: true,
+        discovery: {
+          action_type: "no_action_found",
+          confidence: "medium",
+          safe_label_category: "none",
+          selector_category: "none",
+          source: "url",
+          timestamp: "2026-07-28T00:00:00.000Z"
+        },
         snapshot: {
           ...trustedSnapshot,
           final_url: jobUrl,

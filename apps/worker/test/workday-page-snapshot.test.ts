@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   captureSafePageSnapshot,
   classifyWorkdayLandingPage,
+  discoverWorkdayLandingActions,
   redactPageSnapshotForLogs,
   runWorkdayPageOpenCheck
 } from "../src/workday-page-snapshot";
@@ -11,6 +12,7 @@ describe("workday page snapshot foundation", () => {
   it("opens a trusted Workday job URL and returns safe metadata", async () => {
     const visited: string[] = [];
     const closed: string[] = [];
+    const visibleLabels = ["Apply now"];
     const launcher = {
       launch: async () => ({
         close: async () => {
@@ -27,6 +29,10 @@ describe("workday page snapshot foundation", () => {
             goto: async (url: string) => {
               visited.push(url);
             },
+            getByRole: (_role: "button" | "link", options: { name: RegExp | string }) => ({
+              isVisible: async () =>
+                visibleLabels.some((label) => (typeof options.name === "string" ? label === options.name : options.name.test(label)))
+            }),
             title: async () => "Engineer",
             url: () => "https://acme.wd5.myworkdayjobs.com/External/job/Engineer"
           })
@@ -53,6 +59,14 @@ describe("workday page snapshot foundation", () => {
         tenant_name: "acme",
         timestamp: "2026-07-28T00:00:00.000Z",
         workday_base_url: "https://acme.wd5.myworkdayjobs.com"
+      },
+      discovery: {
+        action_type: "apply_available",
+        confidence: "high",
+        safe_label_category: "apply",
+        selector_category: "button",
+        source: "selector_signal",
+        timestamp: "2026-07-28T00:00:00.000Z"
       },
       url: "https://acme.wd5.myworkdayjobs.com/External/job/Engineer"
     });
@@ -265,5 +279,113 @@ describe("workday page snapshot foundation", () => {
       confidence: expectedConfidence,
       page_kind: expectedKind
     });
+  });
+
+  it.each([
+    [
+      "apply_available",
+      "https://acme.wd5.myworkdayjobs.com/External/job/Engineer",
+      "Engineer",
+      ["Apply now"],
+      {
+        action_type: "apply_available",
+        confidence: "high",
+        safe_label_category: "apply",
+        selector_category: "button",
+        source: "selector_signal"
+      }
+    ],
+    [
+      "sign_in_available",
+      "https://acme.wd5.myworkdayjobs.com/login",
+      "Workday Sign In",
+      ["Sign In"],
+      {
+        action_type: "sign_in_available",
+        confidence: "high",
+        safe_label_category: "sign_in",
+        selector_category: "button",
+        source: "selector_signal"
+      }
+    ],
+    [
+      "create_account_available",
+      "https://acme.wd5.myworkdayjobs.com/create-account",
+      "Create Account",
+      ["Create Account"],
+      {
+        action_type: "create_account_available",
+        confidence: "high",
+        safe_label_category: "create_account",
+        selector_category: "button",
+        source: "selector_signal"
+      }
+    ],
+    [
+      "job_unavailable",
+      "https://acme.wd5.myworkdayjobs.com/unavailable",
+      "Job Unavailable",
+      ["Job Unavailable"],
+      {
+        action_type: "job_unavailable",
+        confidence: "high",
+        safe_label_category: "job_unavailable",
+        selector_category: "button",
+        source: "selector_signal"
+      }
+    ],
+    [
+      "already_signed_in",
+      "https://acme.wd5.myworkdayjobs.com/home",
+      "Workday Home",
+      ["My Applications"],
+      {
+        action_type: "already_signed_in",
+        confidence: "high",
+        safe_label_category: "already_signed_in",
+        selector_category: "button",
+        source: "selector_signal"
+      }
+    ],
+    [
+      "no_action_found",
+      "https://acme.wd5.myworkdayjobs.com/landing",
+      "Welcome",
+      [],
+      {
+        action_type: "no_action_found",
+        confidence: "medium",
+        safe_label_category: "none",
+        selector_category: "none",
+        source: "url"
+      }
+    ]
+  ])("discovers %s safely", async (_label, url, title, visibleLabels, expected) => {
+    const page = {
+      getByRole: (_role: "button" | "link", options: { name: RegExp | string }) => ({
+        isVisible: async () =>
+          visibleLabels.some((label) => (typeof options.name === "string" ? label === options.name : options.name.test(label)))
+      })
+    };
+
+    await expect(
+      discoverWorkdayLandingActions(page as never, {
+        confidence: "high",
+        final_url: url,
+        hostname: "acme.wd5.myworkdayjobs.com",
+        load_status: "loaded",
+        page_kind_confidence: "high",
+        page_kind: expected.action_type === "sign_in_available" ? "sign_in_page" : expected.action_type === "create_account_available" ? "create_account_page" : expected.action_type === "already_signed_in" ? "already_signed_in_page" : expected.action_type === "job_unavailable" ? "unavailable_page" : expected.action_type === "apply_available" ? "job_page" : "job_page",
+        page_title: title,
+        tenant_key: "acme",
+        tenant_name: "acme",
+        timestamp: "2026-07-28T00:00:00.000Z",
+        workday_base_url: "https://acme.wd5.myworkdayjobs.com"
+      }, "2026-07-28T00:00:00.000Z")
+    ).resolves.toEqual({
+      ...expected,
+      timestamp: "2026-07-28T00:00:00.000Z"
+    });
+    expect(JSON.stringify(expected)).not.toContain("Apply now");
   });
 });

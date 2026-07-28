@@ -2,6 +2,7 @@ import { createWorkerSupabaseClient } from "./worker-env.js";
 import { type WorkerRunReadinessInput, validateWorkerRunReadiness } from "./queue-readiness.js";
 import {
   type SafeWorkdayPageSnapshot,
+  type WorkdayLandingActionDiscovery,
   type WorkdayPageOpenCheckResult,
   runWorkdayPageOpenCheck
 } from "./workday-page-snapshot.js";
@@ -106,7 +107,14 @@ export async function processOneApplicationRun(deps: RunProcessorDeps = createSu
       return { runId: claimedRun.id, status: "tenant_mismatch" } satisfies RunProcessorResult;
     }
 
-    await finishSnapshotSuccess(deps, claimedRun, pageOpenResult.snapshot, expectedTenantKey, finalTenantKey);
+    await finishSnapshotSuccess(
+      deps,
+      claimedRun,
+      pageOpenResult.snapshot,
+      pageOpenResult.discovery,
+      expectedTenantKey,
+      finalTenantKey
+    );
 
     return { runId: claimedRun.id, status: "snapshot_complete" } satisfies RunProcessorResult;
   } catch {
@@ -238,15 +246,20 @@ async function finishSnapshotSuccess(
   deps: RunProcessorDeps,
   run: ClaimedApplicationRun,
   snapshot: SafeWorkdayPageSnapshot,
+  discovery: WorkdayLandingActionDiscovery,
   expectedTenantKey: string | null,
   finalTenantKey: string | null
 ) {
+  const metadata = {
+    ...buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
+    landing_action: discovery
+  };
   const completedAt = getNow(deps);
   const step = await deps.insertRunStep({
     application_run_id: run.id,
     completed_at: completedAt,
     message: "Workday page opened and safe snapshot captured. Worker stops before login or question extraction.",
-    metadata: buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
+    metadata,
     step_name: WORKDAY_PAGE_SNAPSHOT_STEP_NAME,
     step_order: 1,
     step_status: "success"
@@ -254,7 +267,7 @@ async function finishSnapshotSuccess(
 
   await deps.insertAutomationLog({
     application_run_id: run.id,
-    context: buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
+    context: metadata,
     level: "info",
     message: "Workday page snapshot captured. Worker stops before login or question extraction.",
     run_step_id: step.id

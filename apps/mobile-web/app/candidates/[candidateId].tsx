@@ -5,6 +5,8 @@ import { ActivityIndicator, Pressable, Text, TextInput, View } from "react-nativ
 
 import { useAuth } from "../../src/auth/AuthProvider";
 import type { CandidateRecord } from "../../src/candidates/model";
+import type { JobLinkInput, JobLinkRecord, JobLinkStatus, JobLinkValidationErrors } from "../../src/job-links/model";
+import { canManageJobLinks, normalizeJobUrl, toJobLinkPayload, validateJobLinkInput } from "../../src/job-links/model";
 import { AppShell } from "../../src/layout/AppShell";
 import type { CandidateResumeRecord } from "../../src/resumes/model";
 import {
@@ -24,17 +26,28 @@ const resumeColumns =
   "id,candidate_id,storage_bucket,storage_path,file_name,file_type,file_size_bytes,is_active,uploaded_by,notes,created_at,updated_at";
 const zohoColumns =
   "id,candidate_id,email,zoho_account_id,token_expires_at,connection_status,last_otp_check_at,last_success_at,last_error,created_at,updated_at";
+const jobLinkColumns =
+  "id,candidate_id,created_by,url,normalized_url,company_name,job_title,workday_tenant_key,source,status,last_run_id,last_error,priority,notes,created_at,updated_at";
 const zohoStatuses: ZohoConnectionStatus[] = ["not_connected", "connected", "expired", "failed", "revoked"];
+const jobLinkStatuses: JobLinkStatus[] = ["queued", "opened", "login_required", "manual_review_required", "dry_run_complete", "failed", "duplicate", "skipped"];
 
 export default function CandidateDetailScreen() {
   const { candidateId } = useLocalSearchParams<{ candidateId: string }>();
   const { profile, role } = useAuth();
   const canEdit = canManageResumes(role);
+  const canEditJobLinks = canManageJobLinks(role);
   const canEditZoho = canManageZohoMailbox(role);
   const [candidate, setCandidate] = useState<CandidateRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editingJobLinkId, setEditingJobLinkId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSavingJobLink, setIsSavingJobLink] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [jobLinkError, setJobLinkError] = useState<string | null>(null);
+  const [jobLinkForm, setJobLinkForm] = useState<JobLinkInput>({ candidateId: candidateId ?? "", status: "queued", url: "" });
+  const [jobLinkFormErrors, setJobLinkFormErrors] = useState<JobLinkValidationErrors>({});
+  const [jobLinkSuccess, setJobLinkSuccess] = useState<string | null>(null);
+  const [jobLinks, setJobLinks] = useState<JobLinkRecord[]>([]);
   const [resumes, setResumes] = useState<CandidateResumeRecord[]>([]);
   const [zohoError, setZohoError] = useState<string | null>(null);
   const [zohoForm, setZohoForm] = useState<ZohoMailboxInput>({ candidateId: candidateId ?? "", connection_status: "not_connected", email: "" });
@@ -53,10 +66,16 @@ export default function CandidateDetailScreen() {
     setIsLoading(true);
     setError(null);
 
-    const [{ data: candidateData, error: candidateError }, { data: resumeData, error: resumeError }, { data: zohoData, error: zohoFetchError }] = await Promise.all([
+    const [
+      { data: candidateData, error: candidateError },
+      { data: resumeData, error: resumeError },
+      { data: zohoData, error: zohoFetchError },
+      { data: jobLinkData, error: jobLinkFetchError }
+    ] = await Promise.all([
       supabase.from("candidates").select(candidateColumns).eq("id", candidateId).single(),
       supabase.from("candidate_resumes").select(resumeColumns).eq("candidate_id", candidateId).order("created_at", { ascending: false }),
-      supabase.from("zoho_mailboxes").select(zohoColumns).eq("candidate_id", candidateId).order("created_at", { ascending: false }).limit(1).maybeSingle()
+      supabase.from("zoho_mailboxes").select(zohoColumns).eq("candidate_id", candidateId).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+      supabase.from("job_links").select(jobLinkColumns).eq("candidate_id", candidateId).order("priority", { ascending: false }).order("created_at", { ascending: false })
     ]);
 
     if (candidateError) {
@@ -101,6 +120,13 @@ export default function CandidateDetailScreen() {
           zoho_account_id: nextMailbox.zoho_account_id ?? ""
         });
       }
+    }
+
+    if (jobLinkFetchError) {
+      setJobLinkError(jobLinkFetchError.message);
+      setJobLinks([]);
+    } else {
+      setJobLinks((jobLinkData ?? []) as JobLinkRecord[]);
     }
 
     setIsLoading(false);
@@ -168,6 +194,69 @@ export default function CandidateDetailScreen() {
     }
 
     setIsUploading(false);
+  }
+
+  function resetJobLinkForm() {
+    setEditingJobLinkId(null);
+    setJobLinkForm({ candidateId: candidateId ?? "", status: "queued", url: "" });
+    setJobLinkFormErrors({});
+  }
+
+  function startEditJobLink(jobLink: JobLinkRecord) {
+    setEditingJobLinkId(jobLink.id);
+    setJobLinkForm({
+      candidateId: jobLink.candidate_id,
+      company_name: jobLink.company_name ?? "",
+      job_title: jobLink.job_title ?? "",
+      notes: jobLink.notes ?? "",
+      priority: String(jobLink.priority),
+      source: jobLink.source ?? "",
+      status: jobLink.status,
+      url: jobLink.url,
+      workday_tenant_key: jobLink.workday_tenant_key ?? ""
+    });
+    setJobLinkFormErrors({});
+    setJobLinkSuccess(null);
+  }
+
+  function updateJobLinkField<K extends keyof JobLinkInput>(field: K, value: JobLinkInput[K]) {
+    setJobLinkForm((current) => ({ ...current, [field]: value }));
+    setJobLinkFormErrors((current) => ({ ...current, [field]: undefined }));
+    setJobLinkSuccess(null);
+  }
+
+  async function saveJobLink() {
+    if (!candidateId || !canEditJobLinks) {
+      return;
+    }
+
+    const nextForm = { ...jobLinkForm, candidateId };
+    const nextErrors = validateJobLinkInput(nextForm);
+    setJobLinkFormErrors(nextErrors);
+
+    if (Object.keys(nextErrors).length > 0) {
+      return;
+    }
+
+    setIsSavingJobLink(true);
+    setJobLinkError(null);
+    setJobLinkSuccess(null);
+
+    const payload = toJobLinkPayload(nextForm, editingJobLinkId ? undefined : (profile?.id ?? null));
+    const request = editingJobLinkId
+      ? supabase.from("job_links").update(payload).eq("id", editingJobLinkId)
+      : supabase.from("job_links").insert(payload);
+    const { error: saveError } = await request;
+
+    if (saveError) {
+      setJobLinkError(saveError.message);
+    } else {
+      setJobLinkSuccess(editingJobLinkId ? "Job link updated." : "Job link added.");
+      resetJobLinkForm();
+      await loadDetail();
+    }
+
+    setIsSavingJobLink(false);
   }
 
   function updateZohoField<K extends keyof ZohoMailboxInput>(field: K, value: ZohoMailboxInput[K]) {
@@ -291,6 +380,21 @@ export default function CandidateDetailScreen() {
                       onUpdate={updateZohoField}
                       zohoError={zohoError}
                     />
+                  ) : section === "Job Links" ? (
+                    <JobLinksSection
+                      canEdit={canEditJobLinks}
+                      editingId={editingJobLinkId}
+                      form={jobLinkForm}
+                      formErrors={jobLinkFormErrors}
+                      isSaving={isSavingJobLink}
+                      jobLinks={jobLinks}
+                      onCancel={resetJobLinkForm}
+                      onEdit={startEditJobLink}
+                      onSave={saveJobLink}
+                      onUpdate={updateJobLinkField}
+                      saveError={jobLinkError}
+                      success={jobLinkSuccess}
+                    />
                   ) : (
                     <Text className="mt-2 text-sm leading-6 text-zinc-400">Placeholder for a later approved phase.</Text>
                   )}
@@ -391,6 +495,215 @@ function ResumeSection({
         </View>
       )}
     </View>
+  );
+}
+
+function JobLinksSection({
+  canEdit,
+  editingId,
+  form,
+  formErrors,
+  isSaving,
+  jobLinks,
+  onCancel,
+  onEdit,
+  onSave,
+  onUpdate,
+  saveError,
+  success
+}: {
+  canEdit: boolean;
+  editingId: string | null;
+  form: JobLinkInput;
+  formErrors: JobLinkValidationErrors;
+  isSaving: boolean;
+  jobLinks: JobLinkRecord[];
+  onCancel: () => void;
+  onEdit: (jobLink: JobLinkRecord) => void;
+  onSave: () => Promise<void>;
+  onUpdate: <K extends keyof JobLinkInput>(field: K, value: JobLinkInput[K]) => void;
+  saveError: string | null;
+  success: string | null;
+}) {
+  const normalizedUrl = form.url.trim() ? safeNormalizeUrl(form.url) : null;
+
+  return (
+    <View className="mt-4 gap-4">
+      {canEdit ? (
+        <View className="gap-4">
+          <Text className="text-sm text-zinc-400">Paste Workday job links for this candidate. Automation runs are created in a later phase.</Text>
+          <Field label="Workday Job URL" error={formErrors.url}>
+            <TextInput
+              autoCapitalize="none"
+              className="rounded-md border border-border bg-zinc-950 px-3 py-3 text-base text-zinc-100"
+              inputMode="url"
+              onChangeText={(value) => onUpdate("url", value)}
+              placeholder="https://company.wd1.myworkdayjobs.com/..."
+              placeholderTextColor="#71717a"
+              value={form.url}
+            />
+          </Field>
+          {normalizedUrl ? <Text className="text-sm text-zinc-500">Normalized: {normalizedUrl}</Text> : null}
+          <View className="gap-4 md:flex-row">
+            <View className="flex-1">
+              <Field label="Company">
+                <TextInput
+                  className="rounded-md border border-border bg-zinc-950 px-3 py-3 text-base text-zinc-100"
+                  onChangeText={(value) => onUpdate("company_name", value)}
+                  placeholder="Optional"
+                  placeholderTextColor="#71717a"
+                  value={form.company_name}
+                />
+              </Field>
+            </View>
+            <View className="flex-1">
+              <Field label="Job Title">
+                <TextInput
+                  className="rounded-md border border-border bg-zinc-950 px-3 py-3 text-base text-zinc-100"
+                  onChangeText={(value) => onUpdate("job_title", value)}
+                  placeholder="Optional"
+                  placeholderTextColor="#71717a"
+                  value={form.job_title}
+                />
+              </Field>
+            </View>
+          </View>
+          <View className="gap-4 md:flex-row">
+            <View className="flex-1">
+              <Field label="Tenant Key">
+                <TextInput
+                  autoCapitalize="none"
+                  className="rounded-md border border-border bg-zinc-950 px-3 py-3 text-base text-zinc-100"
+                  onChangeText={(value) => onUpdate("workday_tenant_key", value)}
+                  placeholder="Optional"
+                  placeholderTextColor="#71717a"
+                  value={form.workday_tenant_key}
+                />
+              </Field>
+            </View>
+            <View className="flex-1">
+              <Field label="Priority" error={formErrors.priority}>
+                <TextInput
+                  className="rounded-md border border-border bg-zinc-950 px-3 py-3 text-base text-zinc-100"
+                  inputMode="numeric"
+                  onChangeText={(value) => onUpdate("priority", value)}
+                  placeholder="0"
+                  placeholderTextColor="#71717a"
+                  value={form.priority}
+                />
+              </Field>
+            </View>
+          </View>
+          <Field label="Source">
+            <TextInput
+              className="rounded-md border border-border bg-zinc-950 px-3 py-3 text-base text-zinc-100"
+              onChangeText={(value) => onUpdate("source", value)}
+              placeholder="Optional"
+              placeholderTextColor="#71717a"
+              value={form.source}
+            />
+          </Field>
+          <View className="gap-2">
+            <Text className="text-sm font-medium text-zinc-300">Status</Text>
+            <View className="flex-row flex-wrap gap-2">
+              {jobLinkStatuses.map((status) => {
+                const isActive = form.status === status;
+
+                return (
+                  <Pressable
+                    className={`rounded-md border px-3 py-2 ${isActive ? "border-zinc-100 bg-zinc-100" : "border-border bg-transparent"}`}
+                    key={status}
+                    onPress={() => onUpdate("status", status)}
+                  >
+                    <Text className={`text-sm font-medium ${isActive ? "text-zinc-950" : "text-zinc-300"}`}>{status}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+          <Field label="Notes">
+            <TextInput
+              className="rounded-md border border-border bg-zinc-950 px-3 py-3 text-base text-zinc-100"
+              multiline
+              onChangeText={(value) => onUpdate("notes", value)}
+              placeholder="Optional"
+              placeholderTextColor="#71717a"
+              value={form.notes}
+            />
+          </Field>
+          <View className="flex-row flex-wrap gap-2">
+            <Pressable className="min-h-11 items-center justify-center rounded-md bg-zinc-100 px-4 disabled:opacity-50" disabled={isSaving} onPress={() => void onSave()}>
+              <Text className="text-sm font-semibold text-zinc-950">{isSaving ? "Saving..." : editingId ? "Save Job Link" : "Add Job Link"}</Text>
+            </Pressable>
+            {editingId ? (
+              <Pressable className="min-h-11 items-center justify-center rounded-md border border-border px-4" onPress={onCancel}>
+                <Text className="text-sm font-semibold text-zinc-100">Cancel</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      ) : (
+        <Text className="text-sm text-zinc-400">Viewer role can inspect job links but cannot add or edit them.</Text>
+      )}
+
+      {success ? <Text className="text-sm text-emerald-300">{success}</Text> : null}
+      {saveError ? <Text className="text-sm text-red-300">{saveError}</Text> : null}
+
+      {jobLinks.length === 0 ? (
+        <Text className="text-sm text-zinc-400">No job links added for this candidate.</Text>
+      ) : (
+        <View className="gap-3">
+          {jobLinks.map((jobLink) => (
+            <View className="rounded-md border border-border p-4" key={jobLink.id}>
+              <View className="gap-3 md:flex-row md:items-start md:justify-between">
+                <View className="min-w-0 flex-1">
+                  <Text className="text-base font-semibold text-zinc-100">{jobLink.job_title || "Untitled job"}</Text>
+                  <Text className="mt-1 text-sm text-zinc-400">{jobLink.company_name || "Company not set"}</Text>
+                  <Text className="mt-2 text-sm text-zinc-500">{jobLink.normalized_url}</Text>
+                  <View className="mt-3 gap-2">
+                    <DetailRow label="Tenant Key" value={jobLink.workday_tenant_key} />
+                    <DetailRow label="Priority" value={String(jobLink.priority)} />
+                    <DetailRow label="Source" value={jobLink.source} />
+                    <DetailRow label="Last Error" value={jobLink.last_error} />
+                  </View>
+                </View>
+                <View className="items-start gap-2 md:items-end">
+                  <JobLinkStatusBadge status={jobLink.status} />
+                  {canEdit ? (
+                    <Pressable className="min-h-10 items-center justify-center rounded-md border border-border px-4" onPress={() => onEdit(jobLink)}>
+                      <Text className="text-sm font-semibold text-zinc-100">Edit</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              </View>
+            </View>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function safeNormalizeUrl(url: string) {
+  try {
+    return normalizeJobUrl(url);
+  } catch {
+    return null;
+  }
+}
+
+function JobLinkStatusBadge({ status }: { status: JobLinkStatus }) {
+  const isDone = status === "dry_run_complete";
+  const isWarning = status === "failed" || status === "duplicate" || status === "skipped";
+
+  return (
+    <Text
+      className={`rounded-md border px-3 py-2 text-sm font-medium ${
+        isDone ? "border-emerald-300 text-emerald-200" : isWarning ? "border-yellow-300 text-yellow-200" : "border-border text-zinc-300"
+      }`}
+    >
+      {status}
+    </Text>
   );
 }
 

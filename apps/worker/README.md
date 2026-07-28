@@ -35,3 +35,5 @@ Zoho Mail API scopes to verify before production:
 ZohoMail.messages.READ
 ZohoMail.accounts.READ
 ```
+
+Phase 14 adds worker-only encrypted Workday account password helpers. The recommended V1 standard password value is `Applying@2026`; keep it in worker/runtime configuration or operator runbooks, never in frontend code.

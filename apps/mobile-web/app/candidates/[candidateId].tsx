@@ -21,6 +21,18 @@ import { buildRunReadiness, canCreateApplicationRuns, toApplicationRunPayload, v
 import { supabase } from "../../src/auth/supabase";
 import type { ZohoConnectionStatus, ZohoMailboxInput, ZohoMailboxRecord, ZohoMailboxValidationErrors } from "../../src/zoho/model";
 import { canManageZohoMailbox, isMailboxEmailMismatch, toZohoMailboxPayload, validateZohoMailboxInput } from "../../src/zoho/model";
+import type {
+  WorkdayAccountInput,
+  WorkdayAccountRecord,
+  WorkdayAccountStatus,
+  WorkdayAccountValidationErrors
+} from "../../src/workday/model";
+import {
+  canManageWorkdayAccounts,
+  isWorkdayAccountEmailMismatch,
+  toWorkdayAccountPayload,
+  validateWorkdayAccountInput
+} from "../../src/workday/model";
 
 const candidateColumns =
   "id,created_by,full_name,email,phone,location,target_role,years_experience,status,created_at,updated_at";
@@ -32,8 +44,11 @@ const jobLinkColumns =
   "id,candidate_id,created_by,url,normalized_url,company_name,job_title,workday_tenant_key,source,status,last_run_id,last_error,priority,notes,created_at,updated_at";
 const applicationRunColumns =
   "id,job_link_id,candidate_id,started_by,status,mode,current_step,readiness_score,total_questions_found,total_answers_mapped,total_answers_filled,total_manual_review_items,total_high_risk_items,error_code,error_message,started_at,completed_at,approved_by,approved_at,submitted_at,created_at,updated_at";
+const workdayAccountColumns =
+  "id,candidate_id,tenant_key,tenant_name,workday_base_url,email,username,account_status,last_login_at,last_error,created_at,updated_at";
 const zohoStatuses: ZohoConnectionStatus[] = ["not_connected", "connected", "expired", "failed", "revoked"];
 const jobLinkStatuses: JobLinkStatus[] = ["queued", "opened", "login_required", "manual_review_required", "dry_run_complete", "failed", "duplicate", "skipped"];
+const workdayAccountStatuses: WorkdayAccountStatus[] = ["unknown", "created", "existing", "login_success", "login_failed", "otp_required", "locked", "disabled"];
 
 export default function CandidateDetailScreen() {
   const { candidateId } = useLocalSearchParams<{ candidateId: string }>();
@@ -42,9 +57,11 @@ export default function CandidateDetailScreen() {
   const canEdit = canManageResumes(role);
   const canEditJobLinks = canManageJobLinks(role);
   const canEditZoho = canManageZohoMailbox(role);
+  const canEditWorkday = canManageWorkdayAccounts(role);
   const [candidate, setCandidate] = useState<CandidateRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editingJobLinkId, setEditingJobLinkId] = useState<string | null>(null);
+  const [editingWorkdayAccountId, setEditingWorkdayAccountId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingJobLink, setIsSavingJobLink] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -66,6 +83,12 @@ export default function CandidateDetailScreen() {
   const [zohoMailbox, setZohoMailbox] = useState<ZohoMailboxRecord | null>(null);
   const [isSavingZoho, setIsSavingZoho] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isSavingWorkday, setIsSavingWorkday] = useState(false);
+  const [workdayAccounts, setWorkdayAccounts] = useState<WorkdayAccountRecord[]>([]);
+  const [workdayError, setWorkdayError] = useState<string | null>(null);
+  const [workdayForm, setWorkdayForm] = useState<WorkdayAccountInput>({ candidateId: candidateId ?? "", email: "", tenant_key: "" });
+  const [workdayFormErrors, setWorkdayFormErrors] = useState<WorkdayAccountValidationErrors>({});
+  const [workdaySuccess, setWorkdaySuccess] = useState<string | null>(null);
 
   const loadDetail = useCallback(async () => {
     if (!candidateId) {
@@ -82,13 +105,15 @@ export default function CandidateDetailScreen() {
       { data: resumeData, error: resumeError },
       { data: zohoData, error: zohoFetchError },
       { data: jobLinkData, error: jobLinkFetchError },
-      { data: applicationRunData, error: applicationRunFetchError }
+      { data: applicationRunData, error: applicationRunFetchError },
+      { data: workdayAccountData, error: workdayAccountFetchError }
     ] = await Promise.all([
       supabase.from("candidates").select(candidateColumns).eq("id", candidateId).single(),
       supabase.from("candidate_resumes").select(resumeColumns).eq("candidate_id", candidateId).order("created_at", { ascending: false }),
       supabase.from("zoho_mailboxes").select(zohoColumns).eq("candidate_id", candidateId).order("created_at", { ascending: false }).limit(1).maybeSingle(),
       supabase.from("job_links").select(jobLinkColumns).eq("candidate_id", candidateId).order("priority", { ascending: false }).order("created_at", { ascending: false }),
-      supabase.from("application_runs").select(applicationRunColumns).eq("candidate_id", candidateId).order("created_at", { ascending: false })
+      supabase.from("application_runs").select(applicationRunColumns).eq("candidate_id", candidateId).order("created_at", { ascending: false }),
+      supabase.from("workday_accounts").select(workdayAccountColumns).eq("candidate_id", candidateId).order("created_at", { ascending: false })
     ]);
 
     if (candidateError) {
@@ -106,6 +131,14 @@ export default function CandidateDetailScreen() {
           last_error: "",
           zoho_account_id: ""
         });
+      }
+
+      if (!editingWorkdayAccountId) {
+        setWorkdayForm((current) => ({
+          ...current,
+          candidateId,
+          email: current.email || nextCandidate.email
+        }));
       }
     }
 
@@ -151,8 +184,16 @@ export default function CandidateDetailScreen() {
       setApplicationRuns((applicationRunData ?? []) as ApplicationRunRecord[]);
     }
 
+    if (workdayAccountFetchError) {
+      setWorkdayError(workdayAccountFetchError.message);
+      setWorkdayAccounts([]);
+    } else {
+      setWorkdayError(null);
+      setWorkdayAccounts((workdayAccountData ?? []) as WorkdayAccountRecord[]);
+    }
+
     setIsLoading(false);
-  }, [candidateId]);
+  }, [candidateId, editingWorkdayAccountId]);
 
   useEffect(() => {
     void loadDetail();
@@ -353,6 +394,69 @@ export default function CandidateDetailScreen() {
     setIsSavingZoho(false);
   }
 
+  function resetWorkdayForm() {
+    setEditingWorkdayAccountId(null);
+    setWorkdayForm({ candidateId: candidateId ?? "", email: candidate?.email ?? "", tenant_key: "" });
+    setWorkdayFormErrors({});
+    setWorkdaySuccess(null);
+  }
+
+  function startEditWorkdayAccount(account: WorkdayAccountRecord) {
+    setEditingWorkdayAccountId(account.id);
+    setWorkdayForm({
+      account_status: account.account_status,
+      candidateId: account.candidate_id,
+      email: account.email,
+      last_error: account.last_error ?? "",
+      tenant_key: account.tenant_key,
+      tenant_name: account.tenant_name ?? "",
+      username: account.username ?? "",
+      workday_base_url: account.workday_base_url ?? ""
+    });
+    setWorkdayFormErrors({});
+    setWorkdaySuccess(null);
+  }
+
+  function updateWorkdayField<K extends keyof WorkdayAccountInput>(field: K, value: WorkdayAccountInput[K]) {
+    setWorkdayForm((current) => ({ ...current, [field]: value }));
+    setWorkdayFormErrors((current) => ({ ...current, [field]: undefined }));
+    setWorkdaySuccess(null);
+  }
+
+  async function saveWorkdayAccount() {
+    if (!candidateId || !canEditWorkday) {
+      return;
+    }
+
+    const nextForm = { ...workdayForm, candidateId };
+    const nextErrors = validateWorkdayAccountInput(nextForm);
+    setWorkdayFormErrors(nextErrors);
+
+    if (Object.keys(nextErrors).length > 0) {
+      return;
+    }
+
+    setIsSavingWorkday(true);
+    setWorkdayError(null);
+    setWorkdaySuccess(null);
+
+    const payload = toWorkdayAccountPayload(nextForm);
+    const request = editingWorkdayAccountId
+      ? supabase.from("workday_accounts").update(payload).eq("id", editingWorkdayAccountId)
+      : supabase.from("workday_accounts").insert(payload);
+    const { error: saveError } = await request;
+
+    if (saveError) {
+      setWorkdayError(saveError.message);
+    } else {
+      setWorkdaySuccess(editingWorkdayAccountId ? "Workday account updated." : "Workday account added.");
+      resetWorkdayForm();
+      await loadDetail();
+    }
+
+    setIsSavingWorkday(false);
+  }
+
   async function setActiveResume(resumeId: string) {
     if (!candidateId || !canEdit) {
       return;
@@ -412,7 +516,7 @@ export default function CandidateDetailScreen() {
             </View>
 
             <View className="gap-3">
-              {["Overview", "Resumes", "Zoho Email", "Job Links", "Runs", "Manual Review"].map((section) => (
+              {["Overview", "Resumes", "Zoho Email", "Job Links", "Runs", "Workday Accounts", "Manual Review"].map((section) => (
                 <View className="rounded-lg border border-border bg-card p-5" key={section}>
                   <Text className="text-lg font-semibold text-zinc-100">{section}</Text>
                   {section === "Overview" ? (
@@ -472,6 +576,22 @@ export default function CandidateDetailScreen() {
                       selectedJobLinkId={selectedRunJobLinkId}
                       success={runSuccess}
                       zohoMailboxCount={zohoMailbox ? 1 : 0}
+                    />
+                  ) : section === "Workday Accounts" ? (
+                    <WorkdayAccountsSection
+                      accounts={workdayAccounts}
+                      canEdit={canEditWorkday}
+                      candidate={candidate}
+                      editingId={editingWorkdayAccountId}
+                      form={workdayForm}
+                      formErrors={workdayFormErrors}
+                      isSaving={isSavingWorkday}
+                      onCancel={resetWorkdayForm}
+                      onEdit={startEditWorkdayAccount}
+                      onSave={saveWorkdayAccount}
+                      onUpdate={updateWorkdayField}
+                      saveError={workdayError}
+                      success={workdaySuccess}
                     />
                   ) : (
                     <Text className="mt-2 text-sm leading-6 text-zinc-400">Placeholder for a later approved phase.</Text>
@@ -932,6 +1052,208 @@ function RunStatusBadge({ status }: { status: ApplicationRunRecord["status"] }) 
     <Text
       className={`rounded-md border px-3 py-2 text-sm font-medium ${
         isDone ? "border-emerald-300 text-emerald-200" : isBlocked ? "border-yellow-300 text-yellow-200" : "border-border text-zinc-300"
+      }`}
+    >
+      {status}
+    </Text>
+  );
+}
+
+function WorkdayAccountsSection({
+  accounts,
+  canEdit,
+  candidate,
+  editingId,
+  form,
+  formErrors,
+  isSaving,
+  onCancel,
+  onEdit,
+  onSave,
+  onUpdate,
+  saveError,
+  success
+}: {
+  accounts: WorkdayAccountRecord[];
+  canEdit: boolean;
+  candidate: CandidateRecord;
+  editingId: string | null;
+  form: WorkdayAccountInput;
+  formErrors: WorkdayAccountValidationErrors;
+  isSaving: boolean;
+  onCancel: () => void;
+  onEdit: (account: WorkdayAccountRecord) => void;
+  onSave: () => Promise<void>;
+  onUpdate: <K extends keyof WorkdayAccountInput>(field: K, value: WorkdayAccountInput[K]) => void;
+  saveError: string | null;
+  success: string | null;
+}) {
+  return (
+    <View className="mt-4 gap-4">
+      <View>
+        <Text className="text-sm text-zinc-400">Candidate email</Text>
+        <Text className="mt-1 text-base font-semibold text-zinc-100">{candidate.email}</Text>
+      </View>
+
+      {canEdit ? (
+        <View className="gap-4">
+          <View className="gap-4 md:flex-row">
+            <View className="flex-1">
+              <Field label="Tenant Key" error={formErrors.tenant_key}>
+                <TextInput
+                  autoCapitalize="none"
+                  className="rounded-md border border-border bg-zinc-950 px-3 py-3 text-base text-zinc-100"
+                  onChangeText={(value) => onUpdate("tenant_key", value)}
+                  placeholder="acme"
+                  placeholderTextColor="#71717a"
+                  value={form.tenant_key}
+                />
+              </Field>
+            </View>
+            <View className="flex-1">
+              <Field label="Tenant Name">
+                <TextInput
+                  className="rounded-md border border-border bg-zinc-950 px-3 py-3 text-base text-zinc-100"
+                  onChangeText={(value) => onUpdate("tenant_name", value)}
+                  placeholder="Optional"
+                  placeholderTextColor="#71717a"
+                  value={form.tenant_name}
+                />
+              </Field>
+            </View>
+          </View>
+          <Field label="Workday Base URL" error={formErrors.workday_base_url}>
+            <TextInput
+              autoCapitalize="none"
+              className="rounded-md border border-border bg-zinc-950 px-3 py-3 text-base text-zinc-100"
+              inputMode="url"
+              onChangeText={(value) => onUpdate("workday_base_url", value)}
+              placeholder="https://wd5.myworkday.com/acme"
+              placeholderTextColor="#71717a"
+              value={form.workday_base_url}
+            />
+          </Field>
+          <View className="gap-4 md:flex-row">
+            <View className="flex-1">
+              <Field label="Account Email" error={formErrors.email}>
+                <TextInput
+                  autoCapitalize="none"
+                  className="rounded-md border border-border bg-zinc-950 px-3 py-3 text-base text-zinc-100"
+                  inputMode="email"
+                  onChangeText={(value) => onUpdate("email", value)}
+                  placeholder="candidate@example.com"
+                  placeholderTextColor="#71717a"
+                  value={form.email}
+                />
+              </Field>
+            </View>
+            <View className="flex-1">
+              <Field label="Username">
+                <TextInput
+                  autoCapitalize="none"
+                  className="rounded-md border border-border bg-zinc-950 px-3 py-3 text-base text-zinc-100"
+                  onChangeText={(value) => onUpdate("username", value)}
+                  placeholder="Optional"
+                  placeholderTextColor="#71717a"
+                  value={form.username}
+                />
+              </Field>
+            </View>
+          </View>
+          <View className="gap-2">
+            <Text className="text-sm font-medium text-zinc-300">Account Status</Text>
+            <View className="flex-row flex-wrap gap-2">
+              {workdayAccountStatuses.map((status) => {
+                const isActive = (form.account_status ?? "unknown") === status;
+
+                return (
+                  <Pressable
+                    className={`rounded-md border px-3 py-2 ${isActive ? "border-zinc-100 bg-zinc-100" : "border-border bg-transparent"}`}
+                    key={status}
+                    onPress={() => onUpdate("account_status", status)}
+                  >
+                    <Text className={`text-sm font-medium ${isActive ? "text-zinc-950" : "text-zinc-300"}`}>{status}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+          <Field label="Last Error">
+            <TextInput
+              className="rounded-md border border-border bg-zinc-950 px-3 py-3 text-base text-zinc-100"
+              multiline
+              onChangeText={(value) => onUpdate("last_error", value)}
+              placeholder="Optional status note"
+              placeholderTextColor="#71717a"
+              value={form.last_error}
+            />
+          </Field>
+          <View className="flex-row flex-wrap gap-2">
+            <Pressable className="min-h-11 items-center justify-center rounded-md bg-zinc-100 px-4 disabled:opacity-50" disabled={isSaving} onPress={() => void onSave()}>
+              <Text className="text-sm font-semibold text-zinc-950">{isSaving ? "Saving..." : editingId ? "Save Workday Account" : "Add Workday Account"}</Text>
+            </Pressable>
+            {editingId ? (
+              <Pressable className="min-h-11 items-center justify-center rounded-md border border-border px-4" onPress={onCancel}>
+                <Text className="text-sm font-semibold text-zinc-100">Cancel</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      ) : (
+        <Text className="text-sm text-zinc-400">Viewer role can inspect safe Workday account metadata when RLS permits it, but cannot edit it.</Text>
+      )}
+
+      {success ? <Text className="text-sm text-emerald-300">{success}</Text> : null}
+      {saveError ? <Text className="text-sm text-red-300">{saveError}</Text> : null}
+
+      {accounts.length === 0 ? (
+        <Text className="text-sm text-zinc-400">No Workday accounts added for this candidate.</Text>
+      ) : (
+        <View className="gap-3">
+          {accounts.map((account) => {
+            const hasMismatch = isWorkdayAccountEmailMismatch(candidate.email, account.email);
+
+            return (
+              <View className="rounded-md border border-border p-4" key={account.id}>
+                <View className="gap-3 md:flex-row md:items-start md:justify-between">
+                  <View className="min-w-0 flex-1">
+                    <Text className="text-base font-semibold text-zinc-100">{account.tenant_name || account.tenant_key}</Text>
+                    <Text className="mt-1 text-sm text-zinc-400">{account.email}</Text>
+                    {hasMismatch ? <Text className="mt-2 text-sm text-yellow-200">Account email does not match candidate email.</Text> : null}
+                    <View className="mt-3 gap-2">
+                      <DetailRow label="Tenant Key" value={account.tenant_key} />
+                      <DetailRow label="Base URL" value={account.workday_base_url} />
+                      <DetailRow label="Username" value={account.username} />
+                      <DetailRow label="Last Login" value={account.last_login_at} />
+                      <DetailRow label="Last Error" value={account.last_error} />
+                    </View>
+                  </View>
+                  <View className="items-start gap-2 md:items-end">
+                    <WorkdayAccountStatusBadge status={account.account_status} />
+                    {canEdit ? (
+                      <Pressable className="min-h-10 items-center justify-center rounded-md border border-border px-4" onPress={() => onEdit(account)}>
+                        <Text className="text-sm font-semibold text-zinc-100">Edit</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function WorkdayAccountStatusBadge({ status }: { status: WorkdayAccountStatus }) {
+  const isConnected = status === "created" || status === "existing" || status === "login_success";
+  const isWarning = status === "login_failed" || status === "otp_required" || status === "locked" || status === "disabled";
+
+  return (
+    <Text
+      className={`rounded-md border px-3 py-2 text-sm font-medium ${
+        isConnected ? "border-emerald-300 text-emerald-200" : isWarning ? "border-yellow-300 text-yellow-200" : "border-border text-zinc-300"
       }`}
     >
       {status}

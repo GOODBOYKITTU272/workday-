@@ -39,7 +39,11 @@ export type WorkdayApplyClickReason =
   | "apply_action_low_confidence"
   | "click_failed"
   | "clicked"
+  | "expected_tenant_missing"
+  | "final_tenant_missing"
   | "multiple_apply_actions"
+  | "tenant_mismatch_after_apply"
+  | "tenant_mismatch_before_apply"
   | "untrusted_redirect_after_apply";
 
 export type WorkdayApplyClickResult = {
@@ -54,7 +58,18 @@ export type WorkdayApplyClickResult = {
   before_page_kind: WorkdayPageKind;
   before_url: string;
   click_result: "blocked" | "clicked" | "error";
-  error_code: null | "APPLY_ACTION_NOT_CLICKABLE" | "APPLY_ACTION_NOT_FOUND" | "APPLY_ACTION_LOW_CONFIDENCE" | "APPLY_CLICK_FAILED" | "MULTIPLE_APPLY_ACTIONS" | "UNTRUSTED_REDIRECT_AFTER_APPLY";
+  error_code:
+    | null
+    | "APPLY_ACTION_NOT_CLICKABLE"
+    | "APPLY_ACTION_NOT_FOUND"
+    | "APPLY_ACTION_LOW_CONFIDENCE"
+    | "APPLY_CLICK_FAILED"
+    | "EXPECTED_TENANT_MISSING"
+    | "FINAL_TENANT_MISSING"
+    | "MULTIPLE_APPLY_ACTIONS"
+    | "TENANT_MISMATCH"
+    | "TENANT_MISMATCH_AFTER_APPLY"
+    | "UNTRUSTED_REDIRECT_AFTER_APPLY";
   reason: WorkdayApplyClickReason;
   timestamp: string;
 };
@@ -136,6 +151,7 @@ export async function openTrustedWorkdayJobPage(
   options?: {
     launcher?: BrowserLauncher;
     allowApplyClick?: boolean;
+    expectedTenantKey?: string | null;
     now?: () => string;
   }
 ): Promise<WorkdayPageOpenCheckResult> {
@@ -179,7 +195,51 @@ export async function openTrustedWorkdayJobPage(
     const discovery = await discoverWorkdayLandingActions(openedPage, snapshot, timestamp);
 
     if (options?.allowApplyClick && discovery.action_type === "apply_available" && discovery.confidence === "high") {
-      const applyClickResult = await runSafeWorkdayApplyClickDryRun(openedPage, snapshot, discovery, timestamp);
+      const expectedTenantKey = options.expectedTenantKey?.trim() || null;
+      const finalTenantKey = snapshot.tenant_key?.trim() || null;
+
+      if (!expectedTenantKey) {
+        return {
+          apply_click: buildBlockedApplyClickResult(
+            snapshot,
+            "expected_tenant_missing",
+            "EXPECTED_TENANT_MISSING",
+            timestamp
+          ),
+          discovery,
+          ok: true,
+          snapshot,
+          url: snapshot.final_url
+        } satisfies WorkdayPageOpenCheckResult;
+      }
+
+      if (!finalTenantKey) {
+        return {
+          apply_click: buildBlockedApplyClickResult(snapshot, "final_tenant_missing", "FINAL_TENANT_MISSING", timestamp),
+          discovery,
+          ok: true,
+          snapshot,
+          url: snapshot.final_url
+        } satisfies WorkdayPageOpenCheckResult;
+      }
+
+      if (expectedTenantKey !== finalTenantKey) {
+        return {
+          apply_click: buildBlockedApplyClickResult(snapshot, "tenant_mismatch_before_apply", "TENANT_MISMATCH", timestamp),
+          discovery,
+          ok: true,
+          snapshot,
+          url: snapshot.final_url
+        } satisfies WorkdayPageOpenCheckResult;
+      }
+
+      const applyClickResult = await runSafeWorkdayApplyClickDryRun(
+        openedPage,
+        snapshot,
+        discovery,
+        timestamp,
+        expectedTenantKey
+      );
 
       return {
         apply_click: applyClickResult.apply_click,
@@ -288,7 +348,7 @@ export async function runWorkdayPageOpenCheck(rawUrl: string, options?: { launch
 
 export async function runWorkdayApplyClickDryRun(
   rawUrl: string,
-  options?: { launcher?: BrowserLauncher; now?: () => string }
+  options?: { expectedTenantKey?: string | null; launcher?: BrowserLauncher; now?: () => string }
 ): Promise<WorkdayPageOpenCheckResult> {
   return openTrustedWorkdayJobPage(rawUrl, { ...options, allowApplyClick: true });
 }
@@ -464,7 +524,8 @@ async function runSafeWorkdayApplyClickDryRun(
   page: PageLike,
   snapshot: SafeWorkdayPageSnapshot,
   discovery: WorkdayLandingActionDiscovery,
-  timestamp: string
+  timestamp: string,
+  expectedTenantKey: string
 ): Promise<WorkdayApplyClickDryRunResult> {
   const applyLocator = await findSingleSafeApplyLocator(page);
 
@@ -501,12 +562,12 @@ async function runSafeWorkdayApplyClickDryRun(
       await page.waitForLoadState("domcontentloaded");
     }
 
-    const afterSnapshotOrBlocked = await captureSafePageSnapshot(page, {
-      confidence: snapshot.confidence,
-      error: undefined,
-      is_workday_url: true,
-      normalized_url: snapshot.final_url,
-      reason: "detected",
+      const afterSnapshotOrBlocked = await captureSafePageSnapshot(page, {
+        confidence: snapshot.confidence,
+        error: undefined,
+        is_workday_url: true,
+        normalized_url: snapshot.final_url,
+        reason: "detected",
       tenant_key: snapshot.tenant_key,
       tenant_name: snapshot.tenant_name,
       workday_base_url: snapshot.workday_base_url
@@ -534,6 +595,46 @@ async function runSafeWorkdayApplyClickDryRun(
     }
 
     const afterSnapshot = afterSnapshotOrBlocked;
+    const afterTenantKey = afterSnapshot.tenant_key?.trim() || null;
+
+    if (!afterTenantKey) {
+      return {
+        apply_click: {
+          ...buildBlockedApplyClickResult(snapshot, "final_tenant_missing", "FINAL_TENANT_MISSING", timestamp),
+          after_hostname: afterSnapshot.hostname,
+          after_page_kind: afterSnapshot.page_kind,
+          after_page_kind_confidence: afterSnapshot.page_kind_confidence,
+          after_tenant_key: afterTenantKey,
+          after_tenant_name: afterSnapshot.tenant_name,
+          after_url: afterSnapshot.final_url,
+          after_workday_base_url: afterSnapshot.workday_base_url,
+          click_result: "blocked",
+          error_code: "FINAL_TENANT_MISSING"
+        },
+        discovery,
+        snapshot
+      };
+    }
+
+    if (afterTenantKey !== expectedTenantKey) {
+      return {
+        apply_click: {
+          ...buildBlockedApplyClickResult(snapshot, "tenant_mismatch_after_apply", "TENANT_MISMATCH_AFTER_APPLY", timestamp),
+          after_hostname: afterSnapshot.hostname,
+          after_page_kind: afterSnapshot.page_kind,
+          after_page_kind_confidence: afterSnapshot.page_kind_confidence,
+          after_tenant_key: afterTenantKey,
+          after_tenant_name: afterSnapshot.tenant_name,
+          after_url: afterSnapshot.final_url,
+          after_workday_base_url: afterSnapshot.workday_base_url,
+          click_result: "blocked",
+          error_code: "TENANT_MISMATCH_AFTER_APPLY"
+        },
+        discovery,
+        snapshot
+      };
+    }
+
     const afterDiscovery = await discoverWorkdayLandingActions(page, afterSnapshot, timestamp);
 
     return {

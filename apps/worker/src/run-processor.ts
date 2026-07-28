@@ -31,7 +31,7 @@ export type RunProcessorDeps = {
   insertAutomationLog: (payload: AutomationLogInsert) => Promise<void>;
   insertRunStep: (payload: RunStepInsert) => Promise<{ id: null | string }>;
   loadReadiness: (run: ClaimedApplicationRun) => Promise<WorkerRunReadinessInput>;
-  openWorkdayPage: (jobUrl: string) => Promise<WorkdayPageOpenCheckResult>;
+  openWorkdayPage: (jobUrl: string, expectedTenantKey: string | null) => Promise<WorkdayPageOpenCheckResult>;
   now?: () => string;
   updateRun: (runId: string, payload: ApplicationRunUpdate) => Promise<void>;
 };
@@ -94,21 +94,13 @@ export async function processOneApplicationRun(deps: RunProcessorDeps = createSu
       throw new Error("validated readiness is missing jobLink");
     }
 
-    const pageOpenResult = await deps.openWorkdayPage(readinessInput.jobLink.url);
+    const expectedTenantKey = readinessInput.jobLink.workday_tenant_key?.trim() || null;
+    const pageOpenResult = await deps.openWorkdayPage(readinessInput.jobLink.url, expectedTenantKey);
 
     if (!pageOpenResult.ok) {
       await finishBlockedPageOpen(deps, claimedRun, pageOpenResult);
 
       return { runId: claimedRun.id, status: "snapshot_blocked" } satisfies RunProcessorResult;
-    }
-
-    const expectedTenantKey = readinessInput.jobLink.workday_tenant_key?.trim() || null;
-    const finalTenantKey = pageOpenResult.snapshot.tenant_key?.trim() || null;
-
-    if (expectedTenantKey && finalTenantKey && expectedTenantKey !== finalTenantKey) {
-      await finishTenantMismatch(deps, claimedRun, pageOpenResult.snapshot, expectedTenantKey, finalTenantKey);
-
-      return { runId: claimedRun.id, status: "tenant_mismatch" } satisfies RunProcessorResult;
     }
 
     if (pageOpenResult.apply_click) {
@@ -137,6 +129,14 @@ export async function processOneApplicationRun(deps: RunProcessorDeps = createSu
       );
 
       return { runId: claimedRun.id, status: "apply_click_blocked" } satisfies RunProcessorResult;
+    }
+
+    const finalTenantKey = pageOpenResult.snapshot.tenant_key?.trim() || null;
+
+    if (expectedTenantKey && finalTenantKey && expectedTenantKey !== finalTenantKey) {
+      await finishTenantMismatch(deps, claimedRun, pageOpenResult.snapshot, expectedTenantKey, finalTenantKey);
+
+      return { runId: claimedRun.id, status: "tenant_mismatch" } satisfies RunProcessorResult;
     }
 
     await finishSnapshotSuccess(deps, claimedRun, pageOpenResult.snapshot, pageOpenResult.discovery, expectedTenantKey, finalTenantKey);
@@ -223,7 +223,7 @@ function createSupabaseRunProcessorDeps(): RunProcessorDeps {
         zohoMailboxCount: zohoMailboxCount ?? 0
       };
     },
-    openWorkdayPage: async (jobUrl) => runWorkdayApplyClickDryRun(jobUrl),
+    openWorkdayPage: async (jobUrl, expectedTenantKey) => runWorkdayApplyClickDryRun(jobUrl, { expectedTenantKey }),
     async updateRun(runId, payload) {
       const { error } = await client.from("application_runs").update(payload).eq("id", runId);
 

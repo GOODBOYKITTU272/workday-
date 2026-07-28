@@ -25,6 +25,9 @@ export type ApplicationRunStatus =
   | "stopped"
   | "failed";
 
+export type RunStatusFilter = "all" | "queued" | "running" | "failed" | "dry_run_complete" | "manual_review_required";
+export type RunStatusTone = "active" | "blocked" | "complete" | "neutral";
+
 export type ApplicationRunRecord = {
   id: string;
   approved_at: string | null;
@@ -117,4 +120,32 @@ export function toApplicationRunPayload(readiness: RunReadiness, startedBy?: str
     started_by: startedBy ?? null,
     status: "queued"
   };
+}
+
+export function getRunStatusTone(status: ApplicationRunStatus): RunStatusTone {
+  if (status === "dry_run_complete") {
+    return "complete";
+  }
+
+  if (status === "failed" || status === "stopped" || status === "manual_review_required") {
+    return "blocked";
+  }
+
+  if (status !== "queued") {
+    return "active";
+  }
+
+  return "neutral";
+}
+
+export function isRunInStatusFilter(status: ApplicationRunStatus, filter: RunStatusFilter) {
+  if (filter === "all") {
+    return true;
+  }
+
+  if (filter === "running") {
+    return status !== "queued" && status !== "failed" && status !== "dry_run_complete" && status !== "manual_review_required";
+  }
+
+  return status === filter;
 }

@@ -1,6 +1,13 @@
 import { describe, expect, test } from "vitest";
 
-import { buildRunReadiness, canCreateApplicationRuns, toApplicationRunPayload, validateRunCreation } from "../src/runs/model";
+import {
+  buildRunReadiness,
+  canCreateApplicationRuns,
+  getRunStatusTone,
+  isRunInStatusFilter,
+  toApplicationRunPayload,
+  validateRunCreation
+} from "../src/runs/model";
 
 describe("application run model", () => {
   test("blocks run creation until required candidate context exists", () => {
@@ -39,5 +46,18 @@ describe("application run model", () => {
     expect(canCreateApplicationRuns("operator")).toBe(true);
     expect(canCreateApplicationRuns("viewer")).toBe(false);
     expect(canCreateApplicationRuns(null)).toBe(false);
+  });
+
+  test("classifies run statuses for dashboard display and filters", () => {
+    expect(getRunStatusTone("queued")).toBe("neutral");
+    expect(getRunStatusTone("starting")).toBe("active");
+    expect(getRunStatusTone("failed")).toBe("blocked");
+    expect(getRunStatusTone("dry_run_complete")).toBe("complete");
+
+    expect(isRunInStatusFilter("starting", "running")).toBe(true);
+    expect(isRunInStatusFilter("opening_job_link", "running")).toBe(true);
+    expect(isRunInStatusFilter("queued", "running")).toBe(false);
+    expect(isRunInStatusFilter("failed", "failed")).toBe(true);
+    expect(isRunInStatusFilter("queued", "all")).toBe(true);
   });
 });

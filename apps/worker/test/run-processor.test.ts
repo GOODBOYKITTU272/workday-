@@ -43,6 +43,15 @@ function createDeps(overrides: Partial<RunProcessorDeps> = {}) {
   const deps: RunProcessorDeps = {
     checkWorkdayLoginReadiness: async () => ({ ok: true }),
     claimNextRun: async () => claimedRun,
+    inspectWorkdayLoginPage: async () => ({
+      confidence: "high",
+      email_field_candidate_detected: true,
+      login_page_detected: true,
+      ok: true,
+      password_field_candidate_detected: true,
+      sign_in_action_candidate_detected: true,
+      timestamp: "2026-07-28T00:00:00.000Z"
+    }),
     insertAutomationLog: async (payload) => {
       automationLogs.push(payload);
     },
@@ -810,6 +819,180 @@ describe("application run processor", () => {
     });
 
     async function runLoginRouteScenario(overrides: Partial<RunProcessorDeps>) {
+      const { automationLogs, deps, manualReviewItems, runSteps, runUpdates } = createLoginRouteDeps(overrides);
+
+      await expect(processOneApplicationRun(deps)).resolves.toEqual({ runId: "run-id", status: "snapshot_complete" });
+
+      return { automationLogs, manualReviewItems, runSteps, runUpdates };
+    }
+  });
+
+  describe("Workday login page inspection (route_to_login_flow only)", () => {
+    function createLoginRouteDeps(overrides: Partial<RunProcessorDeps> = {}) {
+      return createDeps({
+        openWorkdayPage: async (): Promise<WorkdayPageOpenCheckResult> => ({
+          ok: true,
+          discovery: {
+            action_type: "sign_in_available",
+            confidence: "high",
+            safe_label_category: "sign_in",
+            selector_category: "button",
+            source: "selector_signal",
+            timestamp: "2026-07-28T00:00:00.000Z"
+          },
+          snapshot: { ...trustedSnapshot, page_kind: "sign_in_page" },
+          url: trustedSnapshot.final_url
+        }),
+        ...overrides
+      });
+    }
+
+    it("passes the snapshot URL and tenant to the inspection only when routed to login", async () => {
+      const calls: Array<{ tenantKey: string | null; url: string }> = [];
+      const { deps } = createLoginRouteDeps({
+        inspectWorkdayLoginPage: async (url, tenantKey) => {
+          calls.push({ tenantKey, url });
+
+          return {
+            confidence: "unknown",
+            email_field_candidate_detected: false,
+            login_page_detected: false,
+            ok: true,
+            password_field_candidate_detected: false,
+            sign_in_action_candidate_detected: false,
+            timestamp: "2026-07-28T00:00:00.000Z"
+          };
+        }
+      });
+
+      await processOneApplicationRun(deps);
+
+      expect(calls).toEqual([{ tenantKey: "acme", url: trustedSnapshot.final_url }]);
+    });
+
+    it("does not inspect the login page for routes other than route_to_login_flow", async () => {
+      let callCount = 0;
+      const { deps } = createDeps({
+        inspectWorkdayLoginPage: async () => {
+          callCount += 1;
+
+          return {
+            confidence: "unknown",
+            email_field_candidate_detected: false,
+            login_page_detected: false,
+            ok: true,
+            password_field_candidate_detected: false,
+            sign_in_action_candidate_detected: false,
+            timestamp: "2026-07-28T00:00:00.000Z"
+          };
+        }
+      });
+
+      await processOneApplicationRun(deps);
+
+      expect(callCount).toBe(0);
+    });
+
+    it("records safe metadata when a trusted login page is confirmed", async () => {
+      const { runSteps, runUpdates } = await runLoginPageInspectionScenario({
+        inspectWorkdayLoginPage: async () => ({
+          confidence: "high",
+          email_field_candidate_detected: true,
+          login_page_detected: true,
+          ok: true,
+          password_field_candidate_detected: true,
+          sign_in_action_candidate_detected: true,
+          timestamp: "2026-07-28T00:00:00.000Z"
+        })
+      });
+
+      expect(runSteps[0]?.metadata).toEqual(
+        expect.objectContaining({
+          login_page_inspection: {
+            blocked_reason: null,
+            confidence: "high",
+            email_field_candidate_detected: true,
+            login_page_detected: true,
+            ok: true,
+            password_field_candidate_detected: true,
+            sign_in_action_candidate_detected: true
+          }
+        })
+      );
+      expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+    });
+
+    it("records manual review with safe metadata when the page cannot be confirmed as a login page", async () => {
+      const { runSteps, runUpdates } = await runLoginPageInspectionScenario({
+        inspectWorkdayLoginPage: async () => ({
+          confidence: "unknown",
+          email_field_candidate_detected: false,
+          login_page_detected: false,
+          ok: true,
+          password_field_candidate_detected: false,
+          sign_in_action_candidate_detected: false,
+          timestamp: "2026-07-28T00:00:00.000Z"
+        })
+      });
+
+      expect(runSteps[0]?.metadata).toEqual(
+        expect.objectContaining({
+          login_page_inspection: expect.objectContaining({ confidence: "unknown", login_page_detected: false, ok: true })
+        })
+      );
+      expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+    });
+
+    it.each([
+      "expected_tenant_missing",
+      "tenant_mismatch_before_open",
+      "untrusted_redirect",
+      "tenant_mismatch_after_open",
+      "final_tenant_missing"
+    ] as const)("keeps the run manual_review_required and records the block reason for %s", async (blockedReason) => {
+      const { runSteps, runUpdates } = await runLoginPageInspectionScenario({
+        inspectWorkdayLoginPage: async () => ({ blockedReason, ok: false })
+      });
+
+      expect(runSteps[0]?.metadata).toEqual(
+        expect.objectContaining({ login_page_inspection: { blocked_reason: blockedReason, ok: false } })
+      );
+      expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+    });
+
+    it("keeps the run manual_review_required and logs nothing sensitive when the inspection itself throws", async () => {
+      const { automationLogs, manualReviewItems, runSteps, runUpdates } = await runLoginPageInspectionScenario({
+        inspectWorkdayLoginPage: async () => {
+          throw new Error("playwright internal trace with leaked-inspection-secret");
+        }
+      });
+
+      expect(runSteps[0]?.metadata).toEqual(
+        expect.objectContaining({ login_page_inspection: { blocked_reason: "inspection_failed", ok: false } })
+      );
+      expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+      expect(JSON.stringify({ automationLogs, manualReviewItems, runSteps })).not.toContain("leaked-inspection-secret");
+    });
+
+    it("never includes raw HTML, selectors, cookies, storage, or field values in run_steps or automation_logs", async () => {
+      const { automationLogs, runSteps } = await runLoginPageInspectionScenario({
+        inspectWorkdayLoginPage: async () => ({
+          confidence: "high",
+          email_field_candidate_detected: true,
+          login_page_detected: true,
+          ok: true,
+          password_field_candidate_detected: true,
+          sign_in_action_candidate_detected: true,
+          timestamp: "2026-07-28T00:00:00.000Z"
+        })
+      });
+
+      const writes = JSON.stringify({ automationLogs, runSteps });
+
+      expect(writes).not.toMatch(/innerHTML|outerHTML|cookie|localStorage|sessionStorage|input\[type|<html/i);
+    });
+
+    async function runLoginPageInspectionScenario(overrides: Partial<RunProcessorDeps>) {
       const { automationLogs, deps, manualReviewItems, runSteps, runUpdates } = createLoginRouteDeps(overrides);
 
       await expect(processOneApplicationRun(deps)).resolves.toEqual({ runId: "run-id", status: "snapshot_complete" });

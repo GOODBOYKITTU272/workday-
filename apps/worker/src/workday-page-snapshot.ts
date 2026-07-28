@@ -157,6 +157,32 @@ export type SafeWorkdayPageSnapshot = {
   workday_base_url: string | null;
 };
 
+export type WorkdayLoginPageInspectionConfidence = "high" | "low" | "medium" | "unknown";
+
+export type WorkdayLoginPageInspectionSignals = {
+  confidence: WorkdayLoginPageInspectionConfidence;
+  email_field_candidate_detected: boolean;
+  login_page_detected: boolean;
+  password_field_candidate_detected: boolean;
+  sign_in_action_candidate_detected: boolean;
+  timestamp: string;
+};
+
+export type WorkdayLoginPageInspectionBlockedReason =
+  | "expected_tenant_missing"
+  | "final_tenant_missing"
+  | "inspection_failed"
+  | "invalid_url"
+  | "tenant_mismatch_after_open"
+  | "tenant_mismatch_before_open"
+  | "unsupported_protocol"
+  | "untrusted_host"
+  | "untrusted_redirect";
+
+export type WorkdayLoginPageInspectionResult =
+  | ({ ok: true } & WorkdayLoginPageInspectionSignals)
+  | { blockedReason: WorkdayLoginPageInspectionBlockedReason; ok: false };
+
 export type WorkdayPageOpenCheckResult =
   | {
       error: string;
@@ -193,6 +219,8 @@ type PageLike = {
     isEnabled: () => Promise<boolean>;
     isVisible: () => Promise<boolean>;
   };
+  // Structural presence checks only (.count()) — never used to fill or click.
+  locator: (selector: string) => { count: () => Promise<number> };
   waitForLoadState?: (state?: "domcontentloaded" | "load" | "networkidle", options?: { signal?: AbortSignal; timeout?: number }) => Promise<void>;
   title: () => Promise<string>;
   url: () => string;
@@ -406,6 +434,73 @@ export async function runWorkdayApplyClickDryRun(
   options?: { expectedTenantKey?: string | null; launcher?: BrowserLauncher; now?: () => string }
 ): Promise<WorkdayPageOpenCheckResult> {
   return openTrustedWorkdayJobPage(rawUrl, { ...options, allowApplyClick: true });
+}
+
+// Reopens an already-vetted trusted URL to check for login-form signals only; never fills or clicks.
+export async function inspectTrustedWorkdayLoginPage(
+  rawUrl: string,
+  expectedTenantKey: string | null,
+  options?: { launcher?: BrowserLauncher; now?: () => string }
+): Promise<WorkdayLoginPageInspectionResult> {
+  const parsed = validateTrustedWorkdayJobUrl(rawUrl);
+
+  if (!parsed.ok) {
+    return { blockedReason: parsed.error_code, ok: false };
+  }
+
+  const trimmedExpectedTenantKey = expectedTenantKey?.trim() || null;
+
+  if (!trimmedExpectedTenantKey) {
+    return { blockedReason: "expected_tenant_missing", ok: false };
+  }
+
+  const preNavigationTenantKey = parsed.detection.tenant_key?.trim() || null;
+
+  if (!preNavigationTenantKey || preNavigationTenantKey !== trimmedExpectedTenantKey) {
+    return { blockedReason: "tenant_mismatch_before_open", ok: false };
+  }
+
+  let browser: Awaited<ReturnType<typeof createBrowserContext>>["browser"] | null = null;
+  let context: Awaited<ReturnType<typeof createBrowserContext>>["context"] | null = null;
+  let page: PageLike | null = null;
+
+  try {
+    const created = await createBrowserContext(options?.launcher);
+    browser = created.browser;
+    context = created.context;
+    const openedPage = await context.newPage();
+    page = openedPage;
+    const timestamp = options?.now?.() ?? new Date().toISOString();
+
+    await openedPage.goto(parsed.normalizedUrl, {
+      timeout: WORKDAY_OPEN_TIMEOUT_MS,
+      waitUntil: "domcontentloaded"
+    });
+
+    const finalValidation = validateTrustedWorkdayFinalUrl(openedPage.url());
+
+    if (!finalValidation.ok) {
+      return { blockedReason: "untrusted_redirect", ok: false };
+    }
+
+    const finalTenantKey = finalValidation.detection.tenant_key?.trim() || null;
+
+    if (!finalTenantKey) {
+      return { blockedReason: "final_tenant_missing", ok: false };
+    }
+
+    if (finalTenantKey !== trimmedExpectedTenantKey) {
+      return { blockedReason: "tenant_mismatch_after_open", ok: false };
+    }
+
+    return await inspectSafeLoginPageSignals(openedPage, timestamp);
+  } catch {
+    return { blockedReason: "inspection_failed", ok: false };
+  } finally {
+    await page?.close();
+    await context?.close();
+    await browser?.close();
+  }
 }
 
 export function classifyWorkdayLandingPage(finalUrl: string, pageTitle: string | null): WorkdayLandingPageClassification {
@@ -1063,6 +1158,39 @@ async function hasVisibleSignal(page: Pick<PageLike, "getByRole">, role: "button
   }
 
   return false;
+}
+
+async function inspectSafeLoginPageSignals(
+  page: Pick<PageLike, "getByRole" | "locator">,
+  timestamp: string
+): Promise<{ ok: true } & WorkdayLoginPageInspectionSignals> {
+  const passwordFieldCandidateDetected = (await page.locator('input[type="password"]').count().catch(() => 0)) > 0;
+  const emailFieldCandidateDetected =
+    (await page
+      .locator('input[type="email"], input[autocomplete="username"], input[autocomplete="email"]')
+      .count()
+      .catch(() => 0)) > 0;
+  const signInActionCandidateDetected = await hasVisibleSignal(page, "button", [/\bsign in\b/i, /\bsign on\b/i, /\blog in\b/i, /\blogin\b/i]);
+
+  let confidence: WorkdayLoginPageInspectionConfidence = "unknown";
+
+  if (passwordFieldCandidateDetected && emailFieldCandidateDetected && signInActionCandidateDetected) {
+    confidence = "high";
+  } else if (passwordFieldCandidateDetected && (emailFieldCandidateDetected || signInActionCandidateDetected)) {
+    confidence = "medium";
+  } else if (passwordFieldCandidateDetected) {
+    confidence = "low";
+  }
+
+  return {
+    confidence,
+    email_field_candidate_detected: emailFieldCandidateDetected,
+    login_page_detected: passwordFieldCandidateDetected,
+    ok: true,
+    password_field_candidate_detected: passwordFieldCandidateDetected,
+    sign_in_action_candidate_detected: signInActionCandidateDetected,
+    timestamp
+  };
 }
 
 function isBlockedRedirectResult(

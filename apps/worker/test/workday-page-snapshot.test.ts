@@ -6,6 +6,7 @@ import {
   classifyWorkdayLandingPage,
   classifyPostApplyLandingState,
   discoverWorkdayLandingActions,
+  inspectTrustedWorkdayLoginPage,
   runWorkdayApplyClickDryRun,
   redactPageSnapshotForLogs,
   runWorkdayPageOpenCheck
@@ -887,5 +888,188 @@ describe("workday page snapshot foundation", () => {
     });
 
     expect(actions).toEqual([]);
+  });
+});
+
+describe("inspectTrustedWorkdayLoginPage", () => {
+  function createLoginPageLauncher(config: {
+    emailFieldCount?: number;
+    finalUrl?: string;
+    passwordFieldCount?: number;
+    signInButtonVisible?: boolean;
+  }) {
+    const visited: string[] = [];
+    const closed: string[] = [];
+    const finalUrl = config.finalUrl ?? "https://acme.wd5.myworkdayjobs.com/External/sign-in";
+    const passwordFieldCount = config.passwordFieldCount ?? 0;
+    const emailFieldCount = config.emailFieldCount ?? 0;
+    const signInButtonVisible = config.signInButtonVisible ?? false;
+
+    const launcher = {
+      launch: async () => ({
+        close: async () => {
+          closed.push("browser");
+        },
+        newContext: async () => ({
+          close: async () => {
+            closed.push("context");
+          },
+          newPage: async () => ({
+            close: async () => {
+              closed.push("page");
+            },
+            getByRole: (_role: "button" | "link", options: { name: RegExp | string }) => ({
+              click: async () => undefined,
+              count: async () => (signInButtonVisible ? 1 : 0),
+              isEnabled: async () => true,
+              isVisible: async () =>
+                signInButtonVisible && (typeof options.name === "string" ? false : options.name.test("Sign In"))
+            }),
+            goto: async (url: string) => {
+              visited.push(url);
+            },
+            locator: (selector: string) => ({
+              count: async () => {
+                if (selector.includes("password")) {
+                  return passwordFieldCount;
+                }
+
+                if (selector.includes("email") || selector.includes("username")) {
+                  return emailFieldCount;
+                }
+
+                return 0;
+              }
+            }),
+            title: async () => "Sign In",
+            url: () => finalUrl
+          })
+        })
+      })
+    };
+
+    return { closed, launcher, visited };
+  }
+
+  it("reports high confidence when password, email, and sign-in signals are all present", async () => {
+    const { launcher } = createLoginPageLauncher({ emailFieldCount: 1, passwordFieldCount: 1, signInButtonVisible: true });
+
+    await expect(
+      inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", {
+        launcher,
+        now: () => "2026-07-28T00:00:00.000Z"
+      })
+    ).resolves.toEqual({
+      confidence: "high",
+      email_field_candidate_detected: true,
+      login_page_detected: true,
+      ok: true,
+      password_field_candidate_detected: true,
+      sign_in_action_candidate_detected: true,
+      timestamp: "2026-07-28T00:00:00.000Z"
+    });
+  });
+
+  it("reports low confidence when only a password field is present", async () => {
+    const { launcher } = createLoginPageLauncher({ passwordFieldCount: 1 });
+
+    await expect(
+      inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", { launcher })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        confidence: "low",
+        login_page_detected: true,
+        ok: true,
+        password_field_candidate_detected: true
+      })
+    );
+  });
+
+  it("reports unknown confidence and login_page_detected false when no password field exists", async () => {
+    const { launcher } = createLoginPageLauncher({ emailFieldCount: 1, signInButtonVisible: true });
+
+    await expect(
+      inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", { launcher })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        confidence: "unknown",
+        login_page_detected: false,
+        ok: true,
+        password_field_candidate_detected: false
+      })
+    );
+  });
+
+  it("blocks and never navigates when the expected tenant key is missing", async () => {
+    const { launcher, visited } = createLoginPageLauncher({ passwordFieldCount: 1 });
+
+    await expect(
+      inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", null, { launcher })
+    ).resolves.toEqual({ blockedReason: "expected_tenant_missing", ok: false });
+    expect(visited).toEqual([]);
+  });
+
+  it("blocks and never navigates when the pre-navigation tenant does not match the expected tenant", async () => {
+    const { launcher, visited } = createLoginPageLauncher({ passwordFieldCount: 1 });
+
+    await expect(
+      inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "beta", { launcher })
+    ).resolves.toEqual({ blockedReason: "tenant_mismatch_before_open", ok: false });
+    expect(visited).toEqual([]);
+  });
+
+  it("blocks when redirected to an untrusted final URL", async () => {
+    const { closed, launcher } = createLoginPageLauncher({ finalUrl: "https://evil.com/phishing", passwordFieldCount: 1 });
+
+    await expect(
+      inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", { launcher })
+    ).resolves.toEqual({ blockedReason: "untrusted_redirect", ok: false });
+    expect(closed).toEqual(["page", "context", "browser"]);
+  });
+
+  it("blocks when the final tenant does not match the expected tenant after navigation", async () => {
+    const { closed, launcher } = createLoginPageLauncher({
+      finalUrl: "https://beta.wd5.myworkdayjobs.com/External/sign-in",
+      passwordFieldCount: 1
+    });
+
+    await expect(
+      inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", { launcher })
+    ).resolves.toEqual({ blockedReason: "tenant_mismatch_after_open", ok: false });
+    expect(closed).toEqual(["page", "context", "browser"]);
+  });
+
+  it("rejects untrusted hostnames before ever launching a browser", async () => {
+    await expect(inspectTrustedWorkdayLoginPage("https://workday.evil.com/sign-in", "acme")).resolves.toEqual({
+      blockedReason: "untrusted_host",
+      ok: false
+    });
+  });
+
+  it("always closes the page, context, and browser on success", async () => {
+    const { closed, launcher } = createLoginPageLauncher({ emailFieldCount: 1, passwordFieldCount: 1, signInButtonVisible: true });
+
+    await inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", { launcher });
+
+    expect(closed).toEqual(["page", "context", "browser"]);
+  });
+
+  it("never returns raw labels, selectors, HTML, or field values — only booleans and enums", async () => {
+    const { launcher } = createLoginPageLauncher({ emailFieldCount: 1, passwordFieldCount: 1, signInButtonVisible: true });
+
+    const result = await inspectTrustedWorkdayLoginPage("https://acme.wd5.myworkdayjobs.com/External/sign-in", "acme", { launcher });
+
+    expect(result.ok).toBe(true);
+    expect(Object.keys(result).sort()).toEqual(
+      [
+        "confidence",
+        "email_field_candidate_detected",
+        "login_page_detected",
+        "ok",
+        "password_field_candidate_detected",
+        "sign_in_action_candidate_detected",
+        "timestamp"
+      ].sort()
+    );
   });
 });

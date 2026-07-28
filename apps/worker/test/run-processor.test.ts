@@ -75,6 +75,26 @@ function createDeps(overrides: Partial<RunProcessorDeps> = {}) {
       tenant_key: "acme",
       timestamp: "2026-07-28T00:00:00.000Z"
     }),
+    captureQuestionnaireSnapshot: async () => ({
+      blocked_reason: null,
+      checkbox_field_count: 1,
+      confidence: "high",
+      execution_allowed: false,
+      field_count: 5,
+      hostname: "acme.wd5.myworkdayjobs.com",
+      ok: true,
+      questionnaire_snapshot_detected: true,
+      radio_field_count: 0,
+      required_field_count: 2,
+      requires_human_review: true,
+      select_field_count: 1,
+      tenant_key: "acme",
+      text_field_count: 2,
+      textarea_field_count: 0,
+      timestamp: "2026-07-28T00:00:00.000Z",
+      unknown_field_count: 0,
+      upload_field_signal_detected: true
+    }),
     insertAutomationLog: async (payload) => {
       automationLogs.push(payload);
     },
@@ -1205,6 +1225,25 @@ describe("application run processor", () => {
             requires_human_review: true,
             resume_upload_signal_detected: false,
             tenant_key: "acme"
+          },
+          questionnaire_snapshot: {
+            blocked_reason: null,
+            checkbox_field_count: 1,
+            confidence: "high",
+            execution_allowed: false,
+            field_count: 5,
+            hostname: "acme.wd5.myworkdayjobs.com",
+            ok: true,
+            questionnaire_snapshot_detected: true,
+            radio_field_count: 0,
+            required_field_count: 2,
+            requires_human_review: true,
+            select_field_count: 1,
+            tenant_key: "acme",
+            text_field_count: 2,
+            textarea_field_count: 0,
+            unknown_field_count: 0,
+            upload_field_signal_detected: true
           }
         })
       );
@@ -1219,19 +1258,36 @@ describe("application run processor", () => {
             execution_allowed: false,
             questionnaire_page_detected: true,
             requires_human_review: true
+          }),
+          questionnaire_snapshot: expect.objectContaining({
+            execution_allowed: false,
+            field_count: 5,
+            questionnaire_snapshot_detected: true,
+            requires_human_review: true
           })
         })
       );
       expect(manualReviewItems).toEqual([
         expect.objectContaining({
           application_form_detected: true,
-          error_code: "WORKDAY_QUESTIONNAIRE_DISCOVERY_REVIEW_REQUIRED",
+          questionnaire_snapshot_checkbox_field_count: 1,
+          error_code: "WORKDAY_QUESTIONNAIRE_SAFE_SNAPSHOT_REVIEW_REQUIRED",
           form_signals_detected: true,
           hostname: "acme.wd5.myworkdayjobs.com",
           post_login_route: "route_to_questionnaire_discovery_later",
           post_login_state: "login_success_possible",
           questionnaire_detection_confidence: "high",
           questionnaire_page_detected: true,
+          questionnaire_snapshot_confidence: "high",
+          questionnaire_snapshot_detected: true,
+          questionnaire_snapshot_field_count: 5,
+          questionnaire_snapshot_radio_field_count: 0,
+          questionnaire_snapshot_required_field_count: 2,
+          questionnaire_snapshot_select_field_count: 1,
+          questionnaire_snapshot_text_field_count: 2,
+          questionnaire_snapshot_textarea_field_count: 0,
+          questionnaire_snapshot_unknown_field_count: 0,
+          questionnaire_snapshot_upload_field_signal_detected: true,
           required_fields_signal_detected: true,
           review_reason: "route_to_questionnaire_discovery_later",
           risk_level: "medium",
@@ -1241,7 +1297,7 @@ describe("application run processor", () => {
       ]);
       expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
       expect(JSON.stringify({ automationLogs, manualReviewItems, runSteps })).not.toMatch(
-        /candidate@example\.com|super-secret-password|otp code|access_token|verification link|leaked-login-secret/i
+        /candidate@example\.com|super-secret-password|otp code|access_token|verification link|leaked-login-secret|What is your salary|placeholder|input\[|input value|option label/i
       );
     });
 
@@ -1273,7 +1329,8 @@ describe("application run processor", () => {
             post_login_state: postLoginState,
             requires_human_review: true
           }),
-          questionnaire_detection: null
+          questionnaire_detection: null,
+          questionnaire_snapshot: null
         })
       );
       expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
@@ -1307,6 +1364,90 @@ describe("application run processor", () => {
       expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
     });
 
+    it("captures the questionnaire safe snapshot only after a positive questionnaire discovery signal", async () => {
+      const calls: Array<{ tenantKey: string | null; url: string }> = [];
+      const { automationLogs, manualReviewItems, runSteps, runUpdates } = await runLoginAttemptScenario({
+        captureQuestionnaireSnapshot: async (url, tenantKey) => {
+          calls.push({ tenantKey, url });
+
+          return {
+            blocked_reason: null,
+            checkbox_field_count: 1,
+            confidence: "medium",
+            execution_allowed: false,
+            field_count: 4,
+            hostname: "acme.wd5.myworkdayjobs.com",
+            ok: true,
+            questionnaire_snapshot_detected: true,
+            radio_field_count: 1,
+            required_field_count: 1,
+            requires_human_review: true,
+            select_field_count: 1,
+            tenant_key: "acme",
+            text_field_count: 1,
+            textarea_field_count: 0,
+            timestamp: "2026-07-28T00:00:00.000Z",
+            unknown_field_count: 0,
+            upload_field_signal_detected: false
+          };
+        }
+      });
+
+      expect(calls).toEqual([{ tenantKey: "acme", url: trustedSnapshot.final_url }]);
+      expect(runSteps[0]?.metadata).toEqual(
+        expect.objectContaining({
+          questionnaire_snapshot: expect.objectContaining({
+            confidence: "medium",
+            execution_allowed: false,
+            field_count: 4,
+            requires_human_review: true
+          })
+        })
+      );
+      expect(manualReviewItems).toEqual([
+        expect.objectContaining({
+          error_code: "WORKDAY_QUESTIONNAIRE_SAFE_SNAPSHOT_REVIEW_REQUIRED",
+          questionnaire_snapshot_confidence: "medium",
+          questionnaire_snapshot_detected: true,
+          questionnaire_snapshot_field_count: 4
+        })
+      ]);
+      expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+      expect(JSON.stringify({ automationLogs, manualReviewItems, runSteps })).not.toMatch(
+        /What is your salary|candidate@example\.com|super-secret-password|token abc123|otp code|verification link|placeholder|input\[|option label/i
+      );
+    });
+
+    it("does not capture a questionnaire snapshot without questionnaire discovery signals", async () => {
+      let callCount = 0;
+      const { runSteps, runUpdates } = await runLoginAttemptScenario({
+        detectQuestionnairePage: async () => ({
+          application_form_detected: false,
+          blocked_reason: null,
+          confidence: "unknown",
+          execution_allowed: false,
+          form_signals_detected: false,
+          hostname: "acme.wd5.myworkdayjobs.com",
+          ok: true,
+          questionnaire_page_detected: false,
+          required_fields_signal_detected: false,
+          requires_human_review: true,
+          resume_upload_signal_detected: false,
+          tenant_key: "acme",
+          timestamp: "2026-07-28T00:00:00.000Z"
+        }),
+        captureQuestionnaireSnapshot: async () => {
+          callCount += 1;
+
+          throw new Error("snapshot must not run");
+        }
+      });
+
+      expect(callCount).toBe(0);
+      expect(runSteps[0]?.metadata).toEqual(expect.objectContaining({ questionnaire_snapshot: null }));
+      expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+    });
+
     it.each(["otp_required", "verification_required", "invalid_credentials_possible", "account_locked_possible", "still_on_login_page", "unknown"] as const)(
       "does not run questionnaire detection for %s",
       async (postLoginState) => {
@@ -1324,6 +1465,30 @@ describe("application run processor", () => {
             callCount += 1;
 
             throw new Error("questionnaire detection must not run");
+          }
+        });
+
+        expect(callCount).toBe(0);
+      }
+    );
+
+    it.each(["otp_required", "verification_required", "invalid_credentials_possible", "account_locked_possible", "still_on_login_page", "unknown"] as const)(
+      "does not capture a questionnaire snapshot for %s",
+      async (postLoginState) => {
+        let callCount = 0;
+        await runLoginAttemptScenario({
+          attemptWorkdayLogin: async () => ({
+            confidence: "high",
+            hostname: "acme.wd5.myworkdayjobs.com",
+            ok: true,
+            post_login_state: postLoginState,
+            tenant_key: "acme",
+            timestamp: "2026-07-28T00:00:00.000Z"
+          }),
+          captureQuestionnaireSnapshot: async () => {
+            callCount += 1;
+
+            throw new Error("snapshot must not run");
           }
         });
 
@@ -1357,7 +1522,8 @@ describe("application run processor", () => {
             execution_allowed: false,
             questionnaire_page_detected: false,
             requires_human_review: true
-          })
+          }),
+          questionnaire_snapshot: null
         })
       );
       expect(manualReviewItems).toEqual([
@@ -1395,6 +1561,30 @@ describe("application run processor", () => {
         })
       ]);
       expect(JSON.stringify({ automationLogs, manualReviewItems, runSteps })).not.toMatch(/salary|password token abc123/i);
+    });
+
+    it("maps thrown questionnaire snapshot errors to fixed safe metadata", async () => {
+      const { automationLogs, manualReviewItems, runSteps } = await runLoginAttemptScenario({
+        captureQuestionnaireSnapshot: async () => {
+          throw new Error("question label salary placeholder secret-token option label");
+        }
+      });
+
+      expect(runSteps[0]?.metadata).toEqual(
+        expect.objectContaining({
+          questionnaire_snapshot: expect.objectContaining({
+            blocked_reason: "inspection_failed",
+            ok: false
+          })
+        })
+      );
+      expect(manualReviewItems).toEqual([
+        expect.objectContaining({
+          error_code: "WORKDAY_QUESTIONNAIRE_SAFE_SNAPSHOT_REVIEW_REQUIRED",
+          questionnaire_snapshot_confidence: "unknown"
+        })
+      ]);
+      expect(JSON.stringify({ automationLogs, manualReviewItems, runSteps })).not.toMatch(/salary|placeholder secret-token|option label/i);
     });
 
     it.each([
@@ -1500,6 +1690,17 @@ describe("buildManualReviewItemPayload", () => {
       form_signals_detected: null,
       questionnaire_detection_confidence: null,
       questionnaire_page_detected: null,
+      questionnaire_snapshot_checkbox_field_count: null,
+      questionnaire_snapshot_confidence: null,
+      questionnaire_snapshot_detected: null,
+      questionnaire_snapshot_field_count: null,
+      questionnaire_snapshot_radio_field_count: null,
+      questionnaire_snapshot_required_field_count: null,
+      questionnaire_snapshot_select_field_count: null,
+      questionnaire_snapshot_text_field_count: null,
+      questionnaire_snapshot_textarea_field_count: null,
+      questionnaire_snapshot_unknown_field_count: null,
+      questionnaire_snapshot_upload_field_signal_detected: null,
       required_fields_signal_detected: null,
       resume_upload_signal_detected: null,
       review_reason: "stop_tenant_mismatch",
@@ -1536,6 +1737,17 @@ describe("buildManualReviewItemPayload", () => {
       form_signals_detected: null,
       questionnaire_detection_confidence: null,
       questionnaire_page_detected: null,
+      questionnaire_snapshot_checkbox_field_count: null,
+      questionnaire_snapshot_confidence: null,
+      questionnaire_snapshot_detected: null,
+      questionnaire_snapshot_field_count: null,
+      questionnaire_snapshot_radio_field_count: null,
+      questionnaire_snapshot_required_field_count: null,
+      questionnaire_snapshot_select_field_count: null,
+      questionnaire_snapshot_text_field_count: null,
+      questionnaire_snapshot_textarea_field_count: null,
+      questionnaire_snapshot_unknown_field_count: null,
+      questionnaire_snapshot_upload_field_signal_detected: null,
       required_fields_signal_detected: null,
       resume_upload_signal_detected: null,
       review_reason: "route_to_login_flow",

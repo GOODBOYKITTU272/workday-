@@ -6,8 +6,10 @@ import {
   type WorkdayLoginAttemptResult,
   type WorkdayPostLoginDecisionClassification,
   type WorkdayQuestionnairePageDetectionResult,
+  type WorkdayQuestionnaireSafeSnapshotResult,
   buildPostApplyDecisionRoute,
   buildPostLoginDecisionRoute,
+  captureTrustedWorkdayQuestionnaireSafeSnapshot,
   type WorkdayLandingActionDiscovery,
   type WorkdayLoginPageInspectionResult,
   type WorkdayPageOpenCheckResult,
@@ -39,6 +41,7 @@ export type RunProcessorResult =
 
 export type RunProcessorDeps = {
   attemptWorkdayLogin: (candidateId: string, tenantKey: string, url: string) => Promise<WorkdayLoginAttemptResult>;
+  captureQuestionnaireSnapshot: (url: string, expectedTenantKey: string | null) => Promise<WorkdayQuestionnaireSafeSnapshotResult>;
   checkWorkdayLoginReadiness: (candidateId: string, tenantKey: string | null) => Promise<WorkdayLoginReadinessResult>;
   claimNextRun: () => Promise<ClaimedApplicationRun | null>;
   detectQuestionnairePage: (url: string, expectedTenantKey: string | null) => Promise<WorkdayQuestionnairePageDetectionResult>;
@@ -89,6 +92,17 @@ export type ManualReviewItemInsert = {
   form_signals_detected: boolean | null;
   questionnaire_detection_confidence: null | string;
   questionnaire_page_detected: boolean | null;
+  questionnaire_snapshot_checkbox_field_count: null | number;
+  questionnaire_snapshot_confidence: null | string;
+  questionnaire_snapshot_detected: boolean | null;
+  questionnaire_snapshot_field_count: null | number;
+  questionnaire_snapshot_radio_field_count: null | number;
+  questionnaire_snapshot_required_field_count: null | number;
+  questionnaire_snapshot_select_field_count: null | number;
+  questionnaire_snapshot_text_field_count: null | number;
+  questionnaire_snapshot_textarea_field_count: null | number;
+  questionnaire_snapshot_unknown_field_count: null | number;
+  questionnaire_snapshot_upload_field_signal_detected: boolean | null;
   required_fields_signal_detected: boolean | null;
   resume_upload_signal_detected: boolean | null;
   review_reason: ManualReviewCategory;
@@ -135,6 +149,7 @@ const UNKNOWN_WORKER_ERROR = "UNKNOWN_WORKER_ERROR";
 const MANUAL_REVIEW_ITEM_CREATE_FAILED = "MANUAL_REVIEW_ITEM_CREATE_FAILED";
 const POST_LOGIN_ROUTE_REVIEW_REQUIRED = "WORKDAY_POST_LOGIN_ROUTE_REVIEW_REQUIRED";
 const QUESTIONNAIRE_DISCOVERY_REVIEW_REQUIRED = "WORKDAY_QUESTIONNAIRE_DISCOVERY_REVIEW_REQUIRED";
+const QUESTIONNAIRE_SAFE_SNAPSHOT_REVIEW_REQUIRED = "WORKDAY_QUESTIONNAIRE_SAFE_SNAPSHOT_REVIEW_REQUIRED";
 
 export function buildManualReviewItemPayload(input: {
   category: ManualReviewCategory;
@@ -144,6 +159,7 @@ export function buildManualReviewItemPayload(input: {
   postLoginRoute?: null | string;
   postLoginState?: null | string;
   questionnaireDetection?: null | WorkdayQuestionnairePageDetectionResult;
+  questionnaireSnapshot?: null | WorkdayQuestionnaireSafeSnapshotResult;
   riskLevel: ManualReviewRiskLevel;
   routeReason?: null | string;
   run: ClaimedApplicationRun;
@@ -163,6 +179,17 @@ export function buildManualReviewItemPayload(input: {
     form_signals_detected: input.questionnaireDetection?.form_signals_detected ?? null,
     questionnaire_detection_confidence: input.questionnaireDetection?.confidence ?? null,
     questionnaire_page_detected: input.questionnaireDetection?.questionnaire_page_detected ?? null,
+    questionnaire_snapshot_checkbox_field_count: input.questionnaireSnapshot?.checkbox_field_count ?? null,
+    questionnaire_snapshot_confidence: input.questionnaireSnapshot?.confidence ?? null,
+    questionnaire_snapshot_detected: input.questionnaireSnapshot?.questionnaire_snapshot_detected ?? null,
+    questionnaire_snapshot_field_count: input.questionnaireSnapshot?.field_count ?? null,
+    questionnaire_snapshot_radio_field_count: input.questionnaireSnapshot?.radio_field_count ?? null,
+    questionnaire_snapshot_required_field_count: input.questionnaireSnapshot?.required_field_count ?? null,
+    questionnaire_snapshot_select_field_count: input.questionnaireSnapshot?.select_field_count ?? null,
+    questionnaire_snapshot_text_field_count: input.questionnaireSnapshot?.text_field_count ?? null,
+    questionnaire_snapshot_textarea_field_count: input.questionnaireSnapshot?.textarea_field_count ?? null,
+    questionnaire_snapshot_unknown_field_count: input.questionnaireSnapshot?.unknown_field_count ?? null,
+    questionnaire_snapshot_upload_field_signal_detected: input.questionnaireSnapshot?.upload_field_signal_detected ?? null,
     required_fields_signal_detected: input.questionnaireDetection?.required_fields_signal_detected ?? null,
     resume_upload_signal_detected: input.questionnaireDetection?.resume_upload_signal_detected ?? null,
     review_reason: input.category,
@@ -338,6 +365,9 @@ function createSupabaseRunProcessorDeps(): RunProcessorDeps {
     async detectQuestionnairePage(url, expectedTenantKey) {
       return detectTrustedWorkdayQuestionnairePage(url, expectedTenantKey);
     },
+    async captureQuestionnaireSnapshot(url, expectedTenantKey) {
+      return captureTrustedWorkdayQuestionnaireSafeSnapshot(url, expectedTenantKey);
+    },
     async claimNextRun() {
       const { data, error } = await client.rpc("claim_next_application_run");
 
@@ -484,6 +514,13 @@ async function finishSnapshotSuccess(
     snapshot.final_url,
     postLoginDecision?.tenant_key ?? finalTenantKey
   );
+  const questionnaireSnapshot = await captureQuestionnaireSnapshotIfDetected(
+    deps,
+    postLoginDecision?.post_login_route ?? null,
+    questionnaireDetection,
+    snapshot.final_url,
+    postLoginDecision?.tenant_key ?? finalTenantKey
+  );
   const metadata = {
     ...buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
     login_attempt: buildSafeLoginAttemptMetadata(loginAttempt),
@@ -491,6 +528,7 @@ async function finishSnapshotSuccess(
     login_readiness: buildSafeLoginReadinessMetadata(loginReadiness),
     post_login_decision: buildSafePostLoginDecisionMetadata(postLoginDecision),
     questionnaire_detection: buildSafeQuestionnaireDetectionMetadata(questionnaireDetection),
+    questionnaire_snapshot: buildSafeQuestionnaireSnapshotMetadata(questionnaireSnapshot),
     post_apply_decision: buildSafePostApplyDecisionMetadata(postApplyDecision),
     post_apply_state: buildSafePostApplyStateMetadata(postApplyState),
     landing_action: discovery
@@ -528,7 +566,9 @@ async function finishSnapshotSuccess(
     run,
     buildManualReviewItemPayload({
       category: postLoginDecision?.post_login_route ?? postApplyDecision.recommended_next_route,
-      errorCode: questionnaireDetection
+      errorCode: questionnaireSnapshot
+        ? QUESTIONNAIRE_SAFE_SNAPSHOT_REVIEW_REQUIRED
+        : questionnaireDetection
         ? QUESTIONNAIRE_DISCOVERY_REVIEW_REQUIRED
         : postLoginDecision
           ? POST_LOGIN_ROUTE_REVIEW_REQUIRED
@@ -538,6 +578,7 @@ async function finishSnapshotSuccess(
       postLoginRoute: postLoginDecision?.post_login_route ?? null,
       postLoginState: postLoginDecision?.post_login_state ?? null,
       questionnaireDetection,
+      questionnaireSnapshot,
       riskLevel: postLoginDecision?.confidence ?? postApplyDecision.route_confidence,
       routeReason: postApplyDecision.route_reason,
       run,
@@ -575,6 +616,13 @@ async function finishApplyClickSuccess(
     snapshot.final_url,
     postLoginDecision?.tenant_key ?? finalTenantKey
   );
+  const questionnaireSnapshot = await captureQuestionnaireSnapshotIfDetected(
+    deps,
+    postLoginDecision?.post_login_route ?? null,
+    questionnaireDetection,
+    snapshot.final_url,
+    postLoginDecision?.tenant_key ?? finalTenantKey
+  );
   const metadata = {
     ...buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
     apply_click: buildSafeApplyClickMetadata(applyClick),
@@ -583,6 +631,7 @@ async function finishApplyClickSuccess(
     login_readiness: buildSafeLoginReadinessMetadata(loginReadiness),
     post_login_decision: buildSafePostLoginDecisionMetadata(postLoginDecision),
     questionnaire_detection: buildSafeQuestionnaireDetectionMetadata(questionnaireDetection),
+    questionnaire_snapshot: buildSafeQuestionnaireSnapshotMetadata(questionnaireSnapshot),
     post_apply_decision: buildSafePostApplyDecisionMetadata(postApplyDecision),
     post_apply_state: buildSafePostApplyStateMetadata(postApplyState),
     landing_action: discovery
@@ -620,7 +669,9 @@ async function finishApplyClickSuccess(
     run,
     buildManualReviewItemPayload({
       category: postLoginDecision?.post_login_route ?? postApplyDecision.recommended_next_route,
-      errorCode: questionnaireDetection
+      errorCode: questionnaireSnapshot
+        ? QUESTIONNAIRE_SAFE_SNAPSHOT_REVIEW_REQUIRED
+        : questionnaireDetection
         ? QUESTIONNAIRE_DISCOVERY_REVIEW_REQUIRED
         : postLoginDecision
           ? POST_LOGIN_ROUTE_REVIEW_REQUIRED
@@ -630,6 +681,7 @@ async function finishApplyClickSuccess(
       postLoginRoute: postLoginDecision?.post_login_route ?? null,
       postLoginState: postLoginDecision?.post_login_state ?? null,
       questionnaireDetection,
+      questionnaireSnapshot,
       riskLevel: postLoginDecision?.confidence ?? postApplyDecision.route_confidence,
       routeReason: postApplyDecision.route_reason,
       run,
@@ -981,6 +1033,84 @@ function buildQuestionnaireInspectionFailedResult(): WorkdayQuestionnairePageDet
     resume_upload_signal_detected: false,
     tenant_key: null,
     timestamp: new Date().toISOString()
+  };
+}
+
+async function captureQuestionnaireSnapshotIfDetected(
+  deps: RunProcessorDeps,
+  postLoginRoute: string | null,
+  questionnaireDetection: WorkdayQuestionnairePageDetectionResult | null,
+  url: string,
+  tenantKey: string | null
+): Promise<WorkdayQuestionnaireSafeSnapshotResult | null> {
+  if (postLoginRoute !== "route_to_questionnaire_discovery_later" || !hasQuestionnaireDiscoverySignal(questionnaireDetection)) {
+    return null;
+  }
+
+  try {
+    return await deps.captureQuestionnaireSnapshot(url, tenantKey);
+  } catch {
+    return buildQuestionnaireSnapshotInspectionFailedResult();
+  }
+}
+
+function hasQuestionnaireDiscoverySignal(questionnaireDetection: WorkdayQuestionnairePageDetectionResult | null): boolean {
+  return Boolean(
+    questionnaireDetection?.ok &&
+      (questionnaireDetection.questionnaire_page_detected ||
+        questionnaireDetection.application_form_detected ||
+        questionnaireDetection.form_signals_detected ||
+        questionnaireDetection.required_fields_signal_detected ||
+        questionnaireDetection.resume_upload_signal_detected)
+  );
+}
+
+function buildSafeQuestionnaireSnapshotMetadata(questionnaireSnapshot: WorkdayQuestionnaireSafeSnapshotResult | null) {
+  if (!questionnaireSnapshot) {
+    return null;
+  }
+
+  return {
+    blocked_reason: questionnaireSnapshot.blocked_reason,
+    checkbox_field_count: questionnaireSnapshot.checkbox_field_count,
+    confidence: questionnaireSnapshot.confidence,
+    execution_allowed: questionnaireSnapshot.execution_allowed,
+    field_count: questionnaireSnapshot.field_count,
+    hostname: questionnaireSnapshot.hostname,
+    ok: questionnaireSnapshot.ok,
+    questionnaire_snapshot_detected: questionnaireSnapshot.questionnaire_snapshot_detected,
+    radio_field_count: questionnaireSnapshot.radio_field_count,
+    required_field_count: questionnaireSnapshot.required_field_count,
+    requires_human_review: questionnaireSnapshot.requires_human_review,
+    select_field_count: questionnaireSnapshot.select_field_count,
+    tenant_key: questionnaireSnapshot.tenant_key,
+    text_field_count: questionnaireSnapshot.text_field_count,
+    textarea_field_count: questionnaireSnapshot.textarea_field_count,
+    unknown_field_count: questionnaireSnapshot.unknown_field_count,
+    upload_field_signal_detected: questionnaireSnapshot.upload_field_signal_detected
+  };
+}
+
+function buildQuestionnaireSnapshotInspectionFailedResult(): WorkdayQuestionnaireSafeSnapshotResult {
+  return {
+    blocked_reason: "inspection_failed",
+    checkbox_field_count: 0,
+    confidence: "unknown",
+    execution_allowed: false,
+    field_count: 0,
+    hostname: null,
+    ok: false,
+    questionnaire_snapshot_detected: false,
+    radio_field_count: 0,
+    required_field_count: 0,
+    requires_human_review: true,
+    select_field_count: 0,
+    tenant_key: null,
+    text_field_count: 0,
+    textarea_field_count: 0,
+    timestamp: new Date().toISOString(),
+    unknown_field_count: 0,
+    upload_field_signal_detected: false
   };
 }
 

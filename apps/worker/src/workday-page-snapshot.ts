@@ -258,6 +258,29 @@ export type WorkdayQuestionnairePageDetectionResult = {
   timestamp: string;
 };
 
+export type WorkdayQuestionnaireSafeSnapshotBlockedReason = WorkdayQuestionnairePageDetectionBlockedReason;
+
+export type WorkdayQuestionnaireSafeSnapshotResult = {
+  blocked_reason: WorkdayQuestionnaireSafeSnapshotBlockedReason | null;
+  checkbox_field_count: number;
+  confidence: WorkdayLoginPageInspectionConfidence;
+  execution_allowed: false;
+  field_count: number;
+  hostname: string | null;
+  ok: boolean;
+  questionnaire_snapshot_detected: boolean;
+  radio_field_count: number;
+  required_field_count: number;
+  requires_human_review: true;
+  select_field_count: number;
+  tenant_key: string | null;
+  text_field_count: number;
+  textarea_field_count: number;
+  timestamp: string;
+  unknown_field_count: number;
+  upload_field_signal_detected: boolean;
+};
+
 export type WorkdayPageOpenCheckResult =
   | {
       error: string;
@@ -583,6 +606,73 @@ export async function detectTrustedWorkdayQuestionnairePage(
     return inspectSafeQuestionnairePageSignals(openedPage, finalValidation.detection, timestamp);
   } catch {
     return buildBlockedQuestionnaireDetection("inspection_failed", timestamp);
+  } finally {
+    await page?.close();
+    await context?.close();
+    await browser?.close();
+  }
+}
+
+// Reopens an already-vetted trusted URL for read-only field counts; never extracts labels, values, text, HTML, locator strings, uploads, or submits.
+export async function captureTrustedWorkdayQuestionnaireSafeSnapshot(
+  rawUrl: string,
+  expectedTenantKey: string | null,
+  options?: { launcher?: BrowserLauncher; now?: () => string }
+): Promise<WorkdayQuestionnaireSafeSnapshotResult> {
+  const timestamp = options?.now?.() ?? new Date().toISOString();
+  const parsed = validateTrustedWorkdayJobUrl(rawUrl);
+
+  if (!parsed.ok) {
+    return buildBlockedQuestionnaireSafeSnapshot(parsed.error_code, timestamp);
+  }
+
+  const trimmedExpectedTenantKey = expectedTenantKey?.trim() || null;
+
+  if (!trimmedExpectedTenantKey) {
+    return buildBlockedQuestionnaireSafeSnapshot("expected_tenant_missing", timestamp);
+  }
+
+  const preNavigationTenantKey = parsed.detection.tenant_key?.trim() || null;
+
+  if (!preNavigationTenantKey || preNavigationTenantKey !== trimmedExpectedTenantKey) {
+    return buildBlockedQuestionnaireSafeSnapshot("tenant_mismatch_before_open", timestamp);
+  }
+
+  let browser: Awaited<ReturnType<typeof createBrowserContext>>["browser"] | null = null;
+  let context: Awaited<ReturnType<typeof createBrowserContext>>["context"] | null = null;
+  let page: PageLike | null = null;
+
+  try {
+    const created = await createBrowserContext(options?.launcher);
+    browser = created.browser;
+    context = created.context;
+    const openedPage = await context.newPage();
+    page = openedPage;
+
+    await openedPage.goto(parsed.normalizedUrl, {
+      timeout: WORKDAY_OPEN_TIMEOUT_MS,
+      waitUntil: "domcontentloaded"
+    });
+
+    const finalValidation = validateTrustedWorkdayFinalUrl(openedPage.url());
+
+    if (!finalValidation.ok) {
+      return buildBlockedQuestionnaireSafeSnapshot("untrusted_redirect", timestamp, finalValidation.hostname);
+    }
+
+    const finalTenantKey = finalValidation.detection.tenant_key?.trim() || null;
+
+    if (!finalTenantKey) {
+      return buildBlockedQuestionnaireSafeSnapshot("final_tenant_missing", timestamp, new URL(finalValidation.normalizedUrl).hostname);
+    }
+
+    if (finalTenantKey !== trimmedExpectedTenantKey) {
+      return buildBlockedQuestionnaireSafeSnapshot("tenant_mismatch_after_open", timestamp, new URL(finalValidation.normalizedUrl).hostname, finalTenantKey);
+    }
+
+    return inspectSafeQuestionnaireSnapshotCounts(openedPage, finalValidation.detection, timestamp);
+  } catch {
+    return buildBlockedQuestionnaireSafeSnapshot("inspection_failed", timestamp);
   } finally {
     await page?.close();
     await context?.close();
@@ -1525,6 +1615,86 @@ function buildBlockedQuestionnaireDetection(
     resume_upload_signal_detected: false,
     tenant_key: tenantKey,
     timestamp
+  };
+}
+
+async function inspectSafeQuestionnaireSnapshotCounts(
+  page: Pick<PageLike, "locator" | "url">,
+  detection: WorkdayTenantDetectionResult,
+  timestamp: string
+): Promise<WorkdayQuestionnaireSafeSnapshotResult> {
+  const finalUrl = page.url();
+  const hostname = new URL(finalUrl).hostname.toLowerCase();
+  const inputFieldCount = await page.locator("input:not([type='hidden'])").count().catch(() => 0);
+  const textFieldCount = await page
+    .locator("input:not([type]), input[type='text'], input[type='email'], input[type='tel'], input[type='url'], input[type='number'], input[type='date'], input[type='search']")
+    .count()
+    .catch(() => 0);
+  const checkboxFieldCount = await page.locator("input[type='checkbox']").count().catch(() => 0);
+  const radioFieldCount = await page.locator("input[type='radio']").count().catch(() => 0);
+  const uploadFieldCount = await page.locator("input[type='file']").count().catch(() => 0);
+  const selectFieldCount = await page.locator("select").count().catch(() => 0);
+  const textareaFieldCount = await page.locator("textarea").count().catch(() => 0);
+  const requiredFieldCount = await page.locator("[required], [aria-required='true']").count().catch(() => 0);
+  const unknownFieldCount = Math.max(inputFieldCount - textFieldCount - checkboxFieldCount - radioFieldCount - uploadFieldCount, 0);
+  const fieldCount = textFieldCount + checkboxFieldCount + radioFieldCount + uploadFieldCount + selectFieldCount + textareaFieldCount + unknownFieldCount;
+  const uploadFieldSignalDetected = uploadFieldCount > 0;
+
+  let confidence: WorkdayLoginPageInspectionConfidence = "unknown";
+
+  if (fieldCount > 0 && (requiredFieldCount > 0 || uploadFieldSignalDetected)) {
+    confidence = "high";
+  } else if (fieldCount > 0) {
+    confidence = "medium";
+  }
+
+  return {
+    blocked_reason: null,
+    checkbox_field_count: checkboxFieldCount,
+    confidence,
+    execution_allowed: false,
+    field_count: fieldCount,
+    hostname,
+    ok: true,
+    questionnaire_snapshot_detected: fieldCount > 0,
+    radio_field_count: radioFieldCount,
+    required_field_count: requiredFieldCount,
+    requires_human_review: true,
+    select_field_count: selectFieldCount,
+    tenant_key: detection.tenant_key,
+    text_field_count: textFieldCount,
+    textarea_field_count: textareaFieldCount,
+    timestamp,
+    unknown_field_count: unknownFieldCount,
+    upload_field_signal_detected: uploadFieldSignalDetected
+  };
+}
+
+function buildBlockedQuestionnaireSafeSnapshot(
+  blockedReason: WorkdayQuestionnaireSafeSnapshotBlockedReason,
+  timestamp: string,
+  hostname: string | null = null,
+  tenantKey: string | null = null
+): WorkdayQuestionnaireSafeSnapshotResult {
+  return {
+    blocked_reason: blockedReason,
+    checkbox_field_count: 0,
+    confidence: "unknown",
+    execution_allowed: false,
+    field_count: 0,
+    hostname,
+    ok: false,
+    questionnaire_snapshot_detected: false,
+    radio_field_count: 0,
+    required_field_count: 0,
+    requires_human_review: true,
+    select_field_count: 0,
+    tenant_key: tenantKey,
+    text_field_count: 0,
+    textarea_field_count: 0,
+    timestamp,
+    unknown_field_count: 0,
+    upload_field_signal_detected: false
   };
 }
 

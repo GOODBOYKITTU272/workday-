@@ -5,6 +5,7 @@ import {
   captureSafePageSnapshot,
   buildPostApplyDecisionRoute,
   buildPostLoginDecisionRoute,
+  captureTrustedWorkdayQuestionnaireSafeSnapshot,
   classifyWorkdayLandingPage,
   classifyPostApplyLandingState,
   detectTrustedWorkdayQuestionnairePage,
@@ -1125,6 +1126,191 @@ describe("detectTrustedWorkdayQuestionnairePage", () => {
     });
 
     await expect(detectTrustedWorkdayQuestionnairePage("https://acme.wd5.myworkdayjobs.com/External/application", "acme", { launcher })).resolves.toEqual(
+      expect.objectContaining({ blocked_reason: "tenant_mismatch_after_open", ok: false })
+    );
+    expect(closed).toEqual(["page", "context", "browser"]);
+  });
+});
+
+describe("captureTrustedWorkdayQuestionnaireSafeSnapshot", () => {
+  function createQuestionnaireSnapshotLauncher(config: {
+    finalUrl?: string;
+    hiddenInputCount?: number;
+    inputCount?: number;
+    fileFieldCount?: number;
+    checkboxFieldCount?: number;
+    radioFieldCount?: number;
+    requiredFieldCount?: number;
+    selectCount?: number;
+    textareaCount?: number;
+    title?: string;
+  }) {
+    const visited: string[] = [];
+    const closed: string[] = [];
+    const actions: string[] = [];
+    const finalUrl = config.finalUrl ?? "https://acme.wd5.myworkdayjobs.com/External/application/questionnaire";
+    const nonHiddenInputCount = config.inputCount ?? 0;
+    const knownSpecialInputCount = (config.checkboxFieldCount ?? 0) + (config.fileFieldCount ?? 0) + (config.radioFieldCount ?? 0);
+    const textInputCount = Math.max(nonHiddenInputCount - knownSpecialInputCount, 0);
+
+    const countBySelector: Record<string, number> = {
+      input: nonHiddenInputCount + (config.hiddenInputCount ?? 0),
+      "input:not([type='hidden'])": nonHiddenInputCount,
+      "input:not([type]), input[type='text'], input[type='email'], input[type='tel'], input[type='url'], input[type='number'], input[type='date'], input[type='search']": textInputCount,
+      "input[type='checkbox']": config.checkboxFieldCount ?? 0,
+      "input[type='file']": config.fileFieldCount ?? 0,
+      "input[type='radio']": config.radioFieldCount ?? 0,
+      "[required], [aria-required='true']": config.requiredFieldCount ?? 0,
+      select: config.selectCount ?? 0,
+      textarea: config.textareaCount ?? 0
+    };
+
+    const launcher = {
+      launch: async () => ({
+        close: async () => {
+          closed.push("browser");
+        },
+        newContext: async () => ({
+          close: async () => {
+            closed.push("context");
+          },
+          newPage: async () => ({
+            close: async () => {
+              closed.push("page");
+            },
+            getByRole: () => ({
+              click: async () => {
+                actions.push("click");
+              },
+              count: async () => 0,
+              isEnabled: async () => false,
+              isVisible: async () => false
+            }),
+            goto: async (url: string) => {
+              visited.push(url);
+            },
+            locator: (selector: string) => ({
+              count: async () => countBySelector[selector] ?? 0,
+              fill: async () => {
+                actions.push("fill");
+              }
+            }),
+            title: async () => config.title ?? "Application questionnaire: What is your legal name?",
+            url: () => finalUrl
+          })
+        })
+      })
+    };
+
+    return { actions, closed, launcher, visited };
+  }
+
+  it("captures safe questionnaire counts without labels, placeholders, selectors, values, option labels, page text, or hidden inputs", async () => {
+    const { actions, launcher } = createQuestionnaireSnapshotLauncher({
+      checkboxFieldCount: 1,
+      fileFieldCount: 1,
+      hiddenInputCount: 2,
+      inputCount: 6,
+      radioFieldCount: 2,
+      requiredFieldCount: 3,
+      selectCount: 1,
+      textareaCount: 1,
+      title: "Application questionnaire: What is your salary?"
+    });
+
+    const result = await captureTrustedWorkdayQuestionnaireSafeSnapshot(
+      "https://acme.wd5.myworkdayjobs.com/External/application/questionnaire?token=secret",
+      "acme",
+      {
+        launcher,
+        now: () => "2026-07-28T00:00:00.000Z"
+      }
+    );
+
+    expect(result).toEqual({
+      blocked_reason: null,
+      checkbox_field_count: 1,
+      confidence: "high",
+      execution_allowed: false,
+      field_count: 8,
+      hostname: "acme.wd5.myworkdayjobs.com",
+      ok: true,
+      questionnaire_snapshot_detected: true,
+      radio_field_count: 2,
+      required_field_count: 3,
+      requires_human_review: true,
+      select_field_count: 1,
+      tenant_key: "acme",
+      text_field_count: 2,
+      textarea_field_count: 1,
+      timestamp: "2026-07-28T00:00:00.000Z",
+      unknown_field_count: 0,
+      upload_field_signal_detected: true
+    });
+    expect(JSON.stringify(result)).not.toMatch(/salary|legal name|placeholder|selector|input\[|<html|<form|secret|candidate@example\.com|otp|verification/i);
+    expect(actions).toEqual([]);
+  });
+
+  it("returns safe unknown metadata when no fields are detected", async () => {
+    const { launcher } = createQuestionnaireSnapshotLauncher({
+      finalUrl: "https://acme.wd5.myworkdayjobs.com/External/home",
+      title: "Candidate home"
+    });
+
+    await expect(captureTrustedWorkdayQuestionnaireSafeSnapshot("https://acme.wd5.myworkdayjobs.com/External/home", "acme", { launcher })).resolves.toEqual(
+      expect.objectContaining({
+        confidence: "unknown",
+        field_count: 0,
+        ok: true,
+        questionnaire_snapshot_detected: false,
+        required_field_count: 0
+      })
+    );
+  });
+
+  it("blocks and never navigates when the expected tenant key is missing", async () => {
+    const { launcher, visited } = createQuestionnaireSnapshotLauncher({ inputCount: 1 });
+
+    await expect(captureTrustedWorkdayQuestionnaireSafeSnapshot("https://acme.wd5.myworkdayjobs.com/External/application", null, { launcher })).resolves.toEqual(
+      expect.objectContaining({ blocked_reason: "expected_tenant_missing", ok: false })
+    );
+    expect(visited).toEqual([]);
+  });
+
+  it("blocks untrusted hostnames before browser launch", async () => {
+    await expect(captureTrustedWorkdayQuestionnaireSafeSnapshot("https://workday.evil.com/application", "acme")).resolves.toEqual(
+      expect.objectContaining({ blocked_reason: "untrusted_host", ok: false })
+    );
+  });
+
+  it("blocks and never navigates on tenant mismatch before navigation", async () => {
+    const { launcher, visited } = createQuestionnaireSnapshotLauncher({ inputCount: 1 });
+
+    await expect(captureTrustedWorkdayQuestionnaireSafeSnapshot("https://acme.wd5.myworkdayjobs.com/External/application", "beta", { launcher })).resolves.toEqual(
+      expect.objectContaining({ blocked_reason: "tenant_mismatch_before_open", ok: false })
+    );
+    expect(visited).toEqual([]);
+  });
+
+  it("blocks untrusted redirects after navigation", async () => {
+    const { closed, launcher } = createQuestionnaireSnapshotLauncher({
+      finalUrl: "https://evil.com/phishing",
+      inputCount: 1
+    });
+
+    await expect(captureTrustedWorkdayQuestionnaireSafeSnapshot("https://acme.wd5.myworkdayjobs.com/External/application", "acme", { launcher })).resolves.toEqual(
+      expect.objectContaining({ blocked_reason: "untrusted_redirect", ok: false })
+    );
+    expect(closed).toEqual(["page", "context", "browser"]);
+  });
+
+  it("blocks tenant mismatch after navigation", async () => {
+    const { closed, launcher } = createQuestionnaireSnapshotLauncher({
+      finalUrl: "https://beta.wd5.myworkdayjobs.com/External/application",
+      inputCount: 1
+    });
+
+    await expect(captureTrustedWorkdayQuestionnaireSafeSnapshot("https://acme.wd5.myworkdayjobs.com/External/application", "acme", { launcher })).resolves.toEqual(
       expect.objectContaining({ blocked_reason: "tenant_mismatch_after_open", ok: false })
     );
     expect(closed).toEqual(["page", "context", "browser"]);

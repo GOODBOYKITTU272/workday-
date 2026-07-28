@@ -4,7 +4,7 @@ type WorkerRunMode = "dry_run" | string;
 export type WorkerRunReadinessInput = {
   activeResumeCount: number;
   candidate: { id: string } | null;
-  jobLink: { candidate_id: string; id: string } | null;
+  jobLink: { candidate_id: string; id: string; url: string; workday_tenant_key: string | null } | null;
   run: { candidate_id: string; id: string; job_link_id: string; mode: WorkerRunMode; status: WorkerRunStatus } | null;
   zohoMailboxCount: number;
 };

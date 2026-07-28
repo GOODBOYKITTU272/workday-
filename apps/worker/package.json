@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@applywizz/shared": "workspace:*"
+    "@applywizz/shared": "workspace:*",
+    "@supabase/supabase-js": "^2.110.8"
   },
   "devDependencies": {
     "tsx": "^4.19.0"

@@ -1,5 +1,11 @@
 {
   "buildCommand": "corepack pnpm --filter @applywizz/mobile-web build",
   "installCommand": "corepack pnpm install --frozen-lockfile",
-  "outputDirectory": "apps/mobile-web/dist"
+  "outputDirectory": "apps/mobile-web/dist",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
 }

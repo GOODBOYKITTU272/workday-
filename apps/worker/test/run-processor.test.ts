@@ -60,6 +60,21 @@ function createDeps(overrides: Partial<RunProcessorDeps> = {}) {
       sign_in_action_candidate_detected: true,
       timestamp: "2026-07-28T00:00:00.000Z"
     }),
+    detectQuestionnairePage: async () => ({
+      application_form_detected: true,
+      blocked_reason: null,
+      confidence: "high",
+      execution_allowed: false,
+      form_signals_detected: true,
+      hostname: "acme.wd5.myworkdayjobs.com",
+      ok: true,
+      questionnaire_page_detected: true,
+      required_fields_signal_detected: true,
+      requires_human_review: true,
+      resume_upload_signal_detected: false,
+      tenant_key: "acme",
+      timestamp: "2026-07-28T00:00:00.000Z"
+    }),
     insertAutomationLog: async (payload) => {
       automationLogs.push(payload);
     },
@@ -1176,6 +1191,20 @@ describe("application run processor", () => {
             requires_human_review: true,
             tenant_key: "acme",
             timestamp: "2026-07-28T00:00:00.000Z"
+          },
+          questionnaire_detection: {
+            application_form_detected: true,
+            blocked_reason: null,
+            confidence: "high",
+            execution_allowed: false,
+            form_signals_detected: true,
+            hostname: "acme.wd5.myworkdayjobs.com",
+            ok: true,
+            questionnaire_page_detected: true,
+            required_fields_signal_detected: true,
+            requires_human_review: true,
+            resume_upload_signal_detected: false,
+            tenant_key: "acme"
           }
         })
       );
@@ -1185,17 +1214,28 @@ describe("application run processor", () => {
             execution_allowed: false,
             post_login_route: "route_to_questionnaire_discovery_later",
             requires_human_review: true
+          }),
+          questionnaire_detection: expect.objectContaining({
+            execution_allowed: false,
+            questionnaire_page_detected: true,
+            requires_human_review: true
           })
         })
       );
       expect(manualReviewItems).toEqual([
         expect.objectContaining({
-          error_code: "WORKDAY_POST_LOGIN_ROUTE_REVIEW_REQUIRED",
+          application_form_detected: true,
+          error_code: "WORKDAY_QUESTIONNAIRE_DISCOVERY_REVIEW_REQUIRED",
+          form_signals_detected: true,
           hostname: "acme.wd5.myworkdayjobs.com",
           post_login_route: "route_to_questionnaire_discovery_later",
           post_login_state: "login_success_possible",
+          questionnaire_detection_confidence: "high",
+          questionnaire_page_detected: true,
+          required_fields_signal_detected: true,
           review_reason: "route_to_questionnaire_discovery_later",
           risk_level: "medium",
+          resume_upload_signal_detected: false,
           tenant_key: "acme"
         })
       ]);
@@ -1232,10 +1272,129 @@ describe("application run processor", () => {
             post_login_route: postLoginRoute,
             post_login_state: postLoginState,
             requires_human_review: true
-          })
+          }),
+          questionnaire_detection: null
         })
       );
       expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+    });
+
+    it("passes the post-login tenant and URL to questionnaire detection only for questionnaire discovery route", async () => {
+      const calls: Array<{ tenantKey: string | null; url: string }> = [];
+      const { runUpdates } = await runLoginAttemptScenario({
+        detectQuestionnairePage: async (url, tenantKey) => {
+          calls.push({ tenantKey, url });
+
+          return {
+            application_form_detected: false,
+            blocked_reason: null,
+            confidence: "unknown",
+            execution_allowed: false,
+            form_signals_detected: false,
+            hostname: "acme.wd5.myworkdayjobs.com",
+            ok: true,
+            questionnaire_page_detected: false,
+            required_fields_signal_detected: false,
+            requires_human_review: true,
+            resume_upload_signal_detected: false,
+            tenant_key: "acme",
+            timestamp: "2026-07-28T00:00:00.000Z"
+          };
+        }
+      });
+
+      expect(calls).toEqual([{ tenantKey: "acme", url: trustedSnapshot.final_url }]);
+      expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+    });
+
+    it.each(["otp_required", "verification_required", "invalid_credentials_possible", "account_locked_possible", "still_on_login_page", "unknown"] as const)(
+      "does not run questionnaire detection for %s",
+      async (postLoginState) => {
+        let callCount = 0;
+        await runLoginAttemptScenario({
+          attemptWorkdayLogin: async () => ({
+            confidence: "high",
+            hostname: "acme.wd5.myworkdayjobs.com",
+            ok: true,
+            post_login_state: postLoginState,
+            tenant_key: "acme",
+            timestamp: "2026-07-28T00:00:00.000Z"
+          }),
+          detectQuestionnairePage: async () => {
+            callCount += 1;
+
+            throw new Error("questionnaire detection must not run");
+          }
+        });
+
+        expect(callCount).toBe(0);
+      }
+    );
+
+    it("keeps unknown questionnaire pages in manual review without raw question text", async () => {
+      const { automationLogs, manualReviewItems, runSteps, runUpdates } = await runLoginAttemptScenario({
+        detectQuestionnairePage: async () => ({
+          application_form_detected: false,
+          blocked_reason: null,
+          confidence: "unknown",
+          execution_allowed: false,
+          form_signals_detected: false,
+          hostname: "acme.wd5.myworkdayjobs.com",
+          ok: true,
+          questionnaire_page_detected: false,
+          required_fields_signal_detected: false,
+          requires_human_review: true,
+          resume_upload_signal_detected: false,
+          tenant_key: "acme",
+          timestamp: "2026-07-28T00:00:00.000Z"
+        })
+      });
+
+      expect(runSteps[0]?.metadata).toEqual(
+        expect.objectContaining({
+          questionnaire_detection: expect.objectContaining({
+            confidence: "unknown",
+            execution_allowed: false,
+            questionnaire_page_detected: false,
+            requires_human_review: true
+          })
+        })
+      );
+      expect(manualReviewItems).toEqual([
+        expect.objectContaining({
+          error_code: "WORKDAY_QUESTIONNAIRE_DISCOVERY_REVIEW_REQUIRED",
+          questionnaire_detection_confidence: "unknown",
+          questionnaire_page_detected: false
+        })
+      ]);
+      expect(runUpdates[0]).toEqual(expect.objectContaining({ status: "manual_review_required" }));
+      expect(JSON.stringify({ automationLogs, manualReviewItems, runSteps })).not.toMatch(
+        /What is your legal name|candidate@example\.com|super-secret-password|token abc123|otp code|verification link/i
+      );
+    });
+
+    it("maps thrown questionnaire detection errors to fixed safe metadata", async () => {
+      const { automationLogs, manualReviewItems, runSteps } = await runLoginAttemptScenario({
+        detectQuestionnairePage: async () => {
+          throw new Error("question text: What is your salary password token abc123");
+        }
+      });
+
+      expect(runSteps[0]?.metadata).toEqual(
+        expect.objectContaining({
+          questionnaire_detection: expect.objectContaining({
+            blocked_reason: "inspection_failed",
+            ok: false
+          })
+        })
+      );
+      expect(manualReviewItems).toEqual([
+        expect.objectContaining({
+          error_code: "WORKDAY_QUESTIONNAIRE_DISCOVERY_REVIEW_REQUIRED",
+          questionnaire_detection_confidence: "unknown"
+        })
+      ]);
+      expect(JSON.stringify({ automationLogs, manualReviewItems, runSteps })).not.toMatch(/salary|password token abc123/i);
     });
 
     it.each([
@@ -1337,6 +1496,12 @@ describe("buildManualReviewItemPayload", () => {
       post_apply_state: null,
       post_login_route: null,
       post_login_state: null,
+      application_form_detected: null,
+      form_signals_detected: null,
+      questionnaire_detection_confidence: null,
+      questionnaire_page_detected: null,
+      required_fields_signal_detected: null,
+      resume_upload_signal_detected: null,
       review_reason: "stop_tenant_mismatch",
       risk_level: "high",
       route_reason: null,
@@ -1367,6 +1532,12 @@ describe("buildManualReviewItemPayload", () => {
       post_apply_state: "login_required",
       post_login_route: null,
       post_login_state: null,
+      application_form_detected: null,
+      form_signals_detected: null,
+      questionnaire_detection_confidence: null,
+      questionnaire_page_detected: null,
+      required_fields_signal_detected: null,
+      resume_upload_signal_detected: null,
       review_reason: "route_to_login_flow",
       risk_level: "high",
       route_reason: "login_signal",

@@ -5,6 +5,7 @@ import {
   type WorkdayApplyClickResult,
   type WorkdayLoginAttemptResult,
   type WorkdayPostLoginDecisionClassification,
+  type WorkdayQuestionnairePageDetectionResult,
   buildPostApplyDecisionRoute,
   buildPostLoginDecisionRoute,
   type WorkdayLandingActionDiscovery,
@@ -12,6 +13,7 @@ import {
   type WorkdayPageOpenCheckResult,
   attemptTrustedWorkdayLogin,
   classifyPostApplyLandingState,
+  detectTrustedWorkdayQuestionnairePage,
   inspectTrustedWorkdayLoginPage,
   runWorkdayApplyClickDryRun
 } from "./workday-page-snapshot.js";
@@ -39,6 +41,7 @@ export type RunProcessorDeps = {
   attemptWorkdayLogin: (candidateId: string, tenantKey: string, url: string) => Promise<WorkdayLoginAttemptResult>;
   checkWorkdayLoginReadiness: (candidateId: string, tenantKey: string | null) => Promise<WorkdayLoginReadinessResult>;
   claimNextRun: () => Promise<ClaimedApplicationRun | null>;
+  detectQuestionnairePage: (url: string, expectedTenantKey: string | null) => Promise<WorkdayQuestionnairePageDetectionResult>;
   inspectWorkdayLoginPage: (url: string, expectedTenantKey: string | null) => Promise<WorkdayLoginPageInspectionResult>;
   insertAutomationLog: (payload: AutomationLogInsert) => Promise<void>;
   insertManualReviewItem: (payload: ManualReviewItemInsert) => Promise<{ created: boolean }>;
@@ -82,6 +85,12 @@ export type ManualReviewItemInsert = {
   post_apply_state: null | string;
   post_login_route: null | string;
   post_login_state: null | string;
+  application_form_detected: boolean | null;
+  form_signals_detected: boolean | null;
+  questionnaire_detection_confidence: null | string;
+  questionnaire_page_detected: boolean | null;
+  required_fields_signal_detected: boolean | null;
+  resume_upload_signal_detected: boolean | null;
   review_reason: ManualReviewCategory;
   risk_level: ManualReviewRiskLevel;
   route_reason: null | string;
@@ -125,6 +134,7 @@ const WORKDAY_APPLY_CLICK_STEP_NAME = "workday_apply_click";
 const UNKNOWN_WORKER_ERROR = "UNKNOWN_WORKER_ERROR";
 const MANUAL_REVIEW_ITEM_CREATE_FAILED = "MANUAL_REVIEW_ITEM_CREATE_FAILED";
 const POST_LOGIN_ROUTE_REVIEW_REQUIRED = "WORKDAY_POST_LOGIN_ROUTE_REVIEW_REQUIRED";
+const QUESTIONNAIRE_DISCOVERY_REVIEW_REQUIRED = "WORKDAY_QUESTIONNAIRE_DISCOVERY_REVIEW_REQUIRED";
 
 export function buildManualReviewItemPayload(input: {
   category: ManualReviewCategory;
@@ -133,6 +143,7 @@ export function buildManualReviewItemPayload(input: {
   postApplyState?: null | string;
   postLoginRoute?: null | string;
   postLoginState?: null | string;
+  questionnaireDetection?: null | WorkdayQuestionnairePageDetectionResult;
   riskLevel: ManualReviewRiskLevel;
   routeReason?: null | string;
   run: ClaimedApplicationRun;
@@ -148,6 +159,12 @@ export function buildManualReviewItemPayload(input: {
     post_apply_state: input.postApplyState ?? null,
     post_login_route: input.postLoginRoute ?? null,
     post_login_state: input.postLoginState ?? null,
+    application_form_detected: input.questionnaireDetection?.application_form_detected ?? null,
+    form_signals_detected: input.questionnaireDetection?.form_signals_detected ?? null,
+    questionnaire_detection_confidence: input.questionnaireDetection?.confidence ?? null,
+    questionnaire_page_detected: input.questionnaireDetection?.questionnaire_page_detected ?? null,
+    required_fields_signal_detected: input.questionnaireDetection?.required_fields_signal_detected ?? null,
+    resume_upload_signal_detected: input.questionnaireDetection?.resume_upload_signal_detected ?? null,
     review_reason: input.category,
     risk_level: input.riskLevel,
     route_reason: input.routeReason ?? null,
@@ -318,6 +335,9 @@ function createSupabaseRunProcessorDeps(): RunProcessorDeps {
     async inspectWorkdayLoginPage(url, expectedTenantKey) {
       return inspectTrustedWorkdayLoginPage(url, expectedTenantKey);
     },
+    async detectQuestionnairePage(url, expectedTenantKey) {
+      return detectTrustedWorkdayQuestionnairePage(url, expectedTenantKey);
+    },
     async claimNextRun() {
       const { data, error } = await client.rpc("claim_next_application_run");
 
@@ -458,12 +478,19 @@ async function finishSnapshotSuccess(
     finalTenantKey
   );
   const postLoginDecision = buildPostLoginDecisionIfAvailable(loginAttempt);
+  const questionnaireDetection = await detectQuestionnairePageIfRouted(
+    deps,
+    postLoginDecision?.post_login_route ?? null,
+    snapshot.final_url,
+    postLoginDecision?.tenant_key ?? finalTenantKey
+  );
   const metadata = {
     ...buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
     login_attempt: buildSafeLoginAttemptMetadata(loginAttempt),
     login_page_inspection: buildSafeLoginPageInspectionMetadata(loginPageInspection),
     login_readiness: buildSafeLoginReadinessMetadata(loginReadiness),
     post_login_decision: buildSafePostLoginDecisionMetadata(postLoginDecision),
+    questionnaire_detection: buildSafeQuestionnaireDetectionMetadata(questionnaireDetection),
     post_apply_decision: buildSafePostApplyDecisionMetadata(postApplyDecision),
     post_apply_state: buildSafePostApplyStateMetadata(postApplyState),
     landing_action: discovery
@@ -501,11 +528,16 @@ async function finishSnapshotSuccess(
     run,
     buildManualReviewItemPayload({
       category: postLoginDecision?.post_login_route ?? postApplyDecision.recommended_next_route,
-      errorCode: postLoginDecision ? POST_LOGIN_ROUTE_REVIEW_REQUIRED : (loginAttemptErrorCode(loginAttempt) ?? loginReadinessErrorCode(loginReadiness)),
+      errorCode: questionnaireDetection
+        ? QUESTIONNAIRE_DISCOVERY_REVIEW_REQUIRED
+        : postLoginDecision
+          ? POST_LOGIN_ROUTE_REVIEW_REQUIRED
+          : (loginAttemptErrorCode(loginAttempt) ?? loginReadinessErrorCode(loginReadiness)),
       hostname: postLoginDecision?.hostname ?? snapshot.hostname,
       postApplyState: postApplyState.post_apply_state,
       postLoginRoute: postLoginDecision?.post_login_route ?? null,
       postLoginState: postLoginDecision?.post_login_state ?? null,
+      questionnaireDetection,
       riskLevel: postLoginDecision?.confidence ?? postApplyDecision.route_confidence,
       routeReason: postApplyDecision.route_reason,
       run,
@@ -537,6 +569,12 @@ async function finishApplyClickSuccess(
     finalTenantKey
   );
   const postLoginDecision = buildPostLoginDecisionIfAvailable(loginAttempt);
+  const questionnaireDetection = await detectQuestionnairePageIfRouted(
+    deps,
+    postLoginDecision?.post_login_route ?? null,
+    snapshot.final_url,
+    postLoginDecision?.tenant_key ?? finalTenantKey
+  );
   const metadata = {
     ...buildSafePageSnapshotMetadata(snapshot, expectedTenantKey, finalTenantKey),
     apply_click: buildSafeApplyClickMetadata(applyClick),
@@ -544,6 +582,7 @@ async function finishApplyClickSuccess(
     login_page_inspection: buildSafeLoginPageInspectionMetadata(loginPageInspection),
     login_readiness: buildSafeLoginReadinessMetadata(loginReadiness),
     post_login_decision: buildSafePostLoginDecisionMetadata(postLoginDecision),
+    questionnaire_detection: buildSafeQuestionnaireDetectionMetadata(questionnaireDetection),
     post_apply_decision: buildSafePostApplyDecisionMetadata(postApplyDecision),
     post_apply_state: buildSafePostApplyStateMetadata(postApplyState),
     landing_action: discovery
@@ -581,11 +620,16 @@ async function finishApplyClickSuccess(
     run,
     buildManualReviewItemPayload({
       category: postLoginDecision?.post_login_route ?? postApplyDecision.recommended_next_route,
-      errorCode: postLoginDecision ? POST_LOGIN_ROUTE_REVIEW_REQUIRED : (loginAttemptErrorCode(loginAttempt) ?? loginReadinessErrorCode(loginReadiness)),
+      errorCode: questionnaireDetection
+        ? QUESTIONNAIRE_DISCOVERY_REVIEW_REQUIRED
+        : postLoginDecision
+          ? POST_LOGIN_ROUTE_REVIEW_REQUIRED
+          : (loginAttemptErrorCode(loginAttempt) ?? loginReadinessErrorCode(loginReadiness)),
       hostname: postLoginDecision?.hostname ?? applyClick.after_hostname,
       postApplyState: postApplyState.post_apply_state,
       postLoginRoute: postLoginDecision?.post_login_route ?? null,
       postLoginState: postLoginDecision?.post_login_state ?? null,
+      questionnaireDetection,
       riskLevel: postLoginDecision?.confidence ?? postApplyDecision.route_confidence,
       routeReason: postApplyDecision.route_reason,
       run,
@@ -881,6 +925,62 @@ function buildSafePostLoginDecisionMetadata(postLoginDecision: WorkdayPostLoginD
     requires_human_review: postLoginDecision.requires_human_review,
     tenant_key: postLoginDecision.tenant_key,
     timestamp: postLoginDecision.timestamp
+  };
+}
+
+async function detectQuestionnairePageIfRouted(
+  deps: RunProcessorDeps,
+  postLoginRoute: string | null,
+  url: string,
+  tenantKey: string | null
+): Promise<WorkdayQuestionnairePageDetectionResult | null> {
+  if (postLoginRoute !== "route_to_questionnaire_discovery_later") {
+    return null;
+  }
+
+  try {
+    return await deps.detectQuestionnairePage(url, tenantKey);
+  } catch {
+    return buildQuestionnaireInspectionFailedResult();
+  }
+}
+
+function buildSafeQuestionnaireDetectionMetadata(questionnaireDetection: WorkdayQuestionnairePageDetectionResult | null) {
+  if (!questionnaireDetection) {
+    return null;
+  }
+
+  return {
+    application_form_detected: questionnaireDetection.application_form_detected,
+    blocked_reason: questionnaireDetection.blocked_reason,
+    confidence: questionnaireDetection.confidence,
+    execution_allowed: questionnaireDetection.execution_allowed,
+    form_signals_detected: questionnaireDetection.form_signals_detected,
+    hostname: questionnaireDetection.hostname,
+    ok: questionnaireDetection.ok,
+    questionnaire_page_detected: questionnaireDetection.questionnaire_page_detected,
+    required_fields_signal_detected: questionnaireDetection.required_fields_signal_detected,
+    requires_human_review: questionnaireDetection.requires_human_review,
+    resume_upload_signal_detected: questionnaireDetection.resume_upload_signal_detected,
+    tenant_key: questionnaireDetection.tenant_key
+  };
+}
+
+function buildQuestionnaireInspectionFailedResult(): WorkdayQuestionnairePageDetectionResult {
+  return {
+    application_form_detected: false,
+    blocked_reason: "inspection_failed",
+    confidence: "unknown",
+    execution_allowed: false,
+    form_signals_detected: false,
+    hostname: null,
+    ok: false,
+    questionnaire_page_detected: false,
+    required_fields_signal_detected: false,
+    requires_human_review: true,
+    resume_upload_signal_detected: false,
+    tenant_key: null,
+    timestamp: new Date().toISOString()
   };
 }
 

@@ -231,6 +231,33 @@ export type WorkdayPostLoginDecisionClassification = {
   timestamp: string;
 };
 
+export type WorkdayQuestionnairePageDetectionBlockedReason =
+  | "expected_tenant_missing"
+  | "final_tenant_missing"
+  | "inspection_failed"
+  | "invalid_url"
+  | "tenant_mismatch_after_open"
+  | "tenant_mismatch_before_open"
+  | "unsupported_protocol"
+  | "untrusted_host"
+  | "untrusted_redirect";
+
+export type WorkdayQuestionnairePageDetectionResult = {
+  application_form_detected: boolean;
+  blocked_reason: WorkdayQuestionnairePageDetectionBlockedReason | null;
+  confidence: WorkdayLoginPageInspectionConfidence;
+  execution_allowed: false;
+  form_signals_detected: boolean;
+  hostname: string | null;
+  ok: boolean;
+  questionnaire_page_detected: boolean;
+  required_fields_signal_detected: boolean;
+  requires_human_review: true;
+  resume_upload_signal_detected: boolean;
+  tenant_key: string | null;
+  timestamp: string;
+};
+
 export type WorkdayPageOpenCheckResult =
   | {
       error: string;
@@ -494,6 +521,73 @@ export async function runWorkdayApplyClickDryRun(
   options?: { expectedTenantKey?: string | null; launcher?: BrowserLauncher; now?: () => string }
 ): Promise<WorkdayPageOpenCheckResult> {
   return openTrustedWorkdayJobPage(rawUrl, { ...options, allowApplyClick: true });
+}
+
+// Reopens an already-vetted trusted URL for read-only form signal checks; never extracts text, fills, clicks, uploads, or submits.
+export async function detectTrustedWorkdayQuestionnairePage(
+  rawUrl: string,
+  expectedTenantKey: string | null,
+  options?: { launcher?: BrowserLauncher; now?: () => string }
+): Promise<WorkdayQuestionnairePageDetectionResult> {
+  const timestamp = options?.now?.() ?? new Date().toISOString();
+  const parsed = validateTrustedWorkdayJobUrl(rawUrl);
+
+  if (!parsed.ok) {
+    return buildBlockedQuestionnaireDetection(parsed.error_code, timestamp);
+  }
+
+  const trimmedExpectedTenantKey = expectedTenantKey?.trim() || null;
+
+  if (!trimmedExpectedTenantKey) {
+    return buildBlockedQuestionnaireDetection("expected_tenant_missing", timestamp);
+  }
+
+  const preNavigationTenantKey = parsed.detection.tenant_key?.trim() || null;
+
+  if (!preNavigationTenantKey || preNavigationTenantKey !== trimmedExpectedTenantKey) {
+    return buildBlockedQuestionnaireDetection("tenant_mismatch_before_open", timestamp);
+  }
+
+  let browser: Awaited<ReturnType<typeof createBrowserContext>>["browser"] | null = null;
+  let context: Awaited<ReturnType<typeof createBrowserContext>>["context"] | null = null;
+  let page: PageLike | null = null;
+
+  try {
+    const created = await createBrowserContext(options?.launcher);
+    browser = created.browser;
+    context = created.context;
+    const openedPage = await context.newPage();
+    page = openedPage;
+
+    await openedPage.goto(parsed.normalizedUrl, {
+      timeout: WORKDAY_OPEN_TIMEOUT_MS,
+      waitUntil: "domcontentloaded"
+    });
+
+    const finalValidation = validateTrustedWorkdayFinalUrl(openedPage.url());
+
+    if (!finalValidation.ok) {
+      return buildBlockedQuestionnaireDetection("untrusted_redirect", timestamp, finalValidation.hostname);
+    }
+
+    const finalTenantKey = finalValidation.detection.tenant_key?.trim() || null;
+
+    if (!finalTenantKey) {
+      return buildBlockedQuestionnaireDetection("final_tenant_missing", timestamp, new URL(finalValidation.normalizedUrl).hostname);
+    }
+
+    if (finalTenantKey !== trimmedExpectedTenantKey) {
+      return buildBlockedQuestionnaireDetection("tenant_mismatch_after_open", timestamp, new URL(finalValidation.normalizedUrl).hostname, finalTenantKey);
+    }
+
+    return inspectSafeQuestionnairePageSignals(openedPage, finalValidation.detection, timestamp);
+  } catch {
+    return buildBlockedQuestionnaireDetection("inspection_failed", timestamp);
+  } finally {
+    await page?.close();
+    await context?.close();
+    await browser?.close();
+  }
 }
 
 // Reopens an already-vetted trusted URL to check for login-form signals only; never fills or clicks.
@@ -1361,6 +1455,77 @@ async function hasVisibleSignal(page: Pick<PageLike, "getByRole">, role: "button
   }
 
   return false;
+}
+
+async function inspectSafeQuestionnairePageSignals(
+  page: Pick<PageLike, "locator" | "title" | "url">,
+  detection: WorkdayTenantDetectionResult,
+  timestamp: string
+): Promise<WorkdayQuestionnairePageDetectionResult> {
+  const finalUrl = page.url();
+  const pageTitle = (await page.title()).trim();
+  const urlTitleText = `${finalUrl} ${pageTitle}`.toLowerCase();
+  const hostname = new URL(finalUrl).hostname.toLowerCase();
+  const formCount = await page.locator("form").count().catch(() => 0);
+  const applicationFieldCount = await page.locator("input, textarea, select").count().catch(() => 0);
+  const fileFieldCount = await page.locator('input[type="file"]').count().catch(() => 0);
+  const requiredFieldCount = await page.locator("[required], [aria-required='true']").count().catch(() => 0);
+
+  const formSignalsDetected = formCount > 0 || applicationFieldCount > 0;
+  const applicationFormDetected = formCount > 0 && applicationFieldCount > 0;
+  const resumeUploadSignalDetected = fileFieldCount > 0;
+  const requiredFieldsSignalDetected = requiredFieldCount > 0;
+  const questionnaireUrlSignalDetected = /questionnaire|application|assessment|candidate/.test(urlTitleText);
+  const questionnairePageDetected = questionnaireUrlSignalDetected && (applicationFormDetected || formSignalsDetected);
+
+  let confidence: WorkdayLoginPageInspectionConfidence = "unknown";
+
+  if (questionnairePageDetected && applicationFormDetected && (requiredFieldsSignalDetected || resumeUploadSignalDetected)) {
+    confidence = "high";
+  } else if (questionnairePageDetected || applicationFormDetected) {
+    confidence = "medium";
+  } else if (formSignalsDetected) {
+    confidence = "low";
+  }
+
+  return {
+    application_form_detected: applicationFormDetected,
+    blocked_reason: null,
+    confidence,
+    execution_allowed: false,
+    form_signals_detected: formSignalsDetected,
+    hostname,
+    ok: true,
+    questionnaire_page_detected: questionnairePageDetected,
+    required_fields_signal_detected: requiredFieldsSignalDetected,
+    requires_human_review: true,
+    resume_upload_signal_detected: resumeUploadSignalDetected,
+    tenant_key: detection.tenant_key,
+    timestamp
+  };
+}
+
+function buildBlockedQuestionnaireDetection(
+  blockedReason: WorkdayQuestionnairePageDetectionBlockedReason,
+  timestamp: string,
+  hostname: string | null = null,
+  tenantKey: string | null = null
+): WorkdayQuestionnairePageDetectionResult {
+  return {
+    application_form_detected: false,
+    blocked_reason: blockedReason,
+    confidence: "unknown",
+    execution_allowed: false,
+    form_signals_detected: false,
+    hostname,
+    ok: false,
+    questionnaire_page_detected: false,
+    required_fields_signal_detected: false,
+    requires_human_review: true,
+    resume_upload_signal_detected: false,
+    tenant_key: tenantKey,
+    timestamp
+  };
 }
 
 async function inspectSafeLoginPageSignals(

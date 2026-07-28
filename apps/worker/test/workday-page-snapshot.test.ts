@@ -7,6 +7,7 @@ import {
   buildPostLoginDecisionRoute,
   classifyWorkdayLandingPage,
   classifyPostApplyLandingState,
+  detectTrustedWorkdayQuestionnairePage,
   discoverWorkdayLandingActions,
   inspectTrustedWorkdayLoginPage,
   runWorkdayApplyClickDryRun,
@@ -933,6 +934,200 @@ describe("buildPostLoginDecisionRoute", () => {
       tenant_key: "acme",
       timestamp: "2026-07-28T00:00:00.000Z"
     });
+  });
+});
+
+describe("detectTrustedWorkdayQuestionnairePage", () => {
+  function createQuestionnaireLauncher(config: {
+    applicationFieldCount?: number;
+    fileFieldCount?: number;
+    finalUrl?: string;
+    formCount?: number;
+    requiredFieldCount?: number;
+    title?: string;
+  }) {
+    const visited: string[] = [];
+    const closed: string[] = [];
+    const actions: string[] = [];
+    const finalUrl = config.finalUrl ?? "https://acme.wd5.myworkdayjobs.com/External/application/questionnaire";
+
+    const launcher = {
+      launch: async () => ({
+        close: async () => {
+          closed.push("browser");
+        },
+        newContext: async () => ({
+          close: async () => {
+            closed.push("context");
+          },
+          newPage: async () => ({
+            close: async () => {
+              closed.push("page");
+            },
+            getByRole: () => ({
+              click: async () => {
+                actions.push("click");
+              },
+              count: async () => 0,
+              isEnabled: async () => false,
+              isVisible: async () => false
+            }),
+            goto: async (url: string) => {
+              visited.push(url);
+            },
+            locator: (selector: string) => ({
+              count: async () => {
+                if (selector === "form") {
+                  return config.formCount ?? 0;
+                }
+
+                if (selector === 'input[type="file"]') {
+                  return config.fileFieldCount ?? 0;
+                }
+
+                if (selector === "[required], [aria-required='true']") {
+                  return config.requiredFieldCount ?? 0;
+                }
+
+                if (selector === "input, textarea, select") {
+                  return config.applicationFieldCount ?? 0;
+                }
+
+                return 0;
+              },
+              fill: async () => {
+                actions.push("fill");
+              }
+            }),
+            title: async () => config.title ?? "Application questionnaire",
+            url: () => finalUrl
+          })
+        })
+      })
+    };
+
+    return { actions, closed, launcher, visited };
+  }
+
+  it("detects a likely questionnaire page using safe booleans only", async () => {
+    const { actions, launcher } = createQuestionnaireLauncher({
+      applicationFieldCount: 4,
+      fileFieldCount: 1,
+      formCount: 1,
+      requiredFieldCount: 2,
+      title: "Application questionnaire: What is your legal name?"
+    });
+
+    const result = await detectTrustedWorkdayQuestionnairePage(
+      "https://acme.wd5.myworkdayjobs.com/External/application/questionnaire?token=secret",
+      "acme",
+      {
+        launcher,
+        now: () => "2026-07-28T00:00:00.000Z"
+      }
+    );
+
+    expect(result).toEqual({
+      application_form_detected: true,
+      blocked_reason: null,
+      confidence: "high",
+      execution_allowed: false,
+      form_signals_detected: true,
+      hostname: "acme.wd5.myworkdayjobs.com",
+      ok: true,
+      questionnaire_page_detected: true,
+      required_fields_signal_detected: true,
+      requires_human_review: true,
+      resume_upload_signal_detected: true,
+      tenant_key: "acme",
+      timestamp: "2026-07-28T00:00:00.000Z"
+    });
+    expect(Object.keys(result).sort()).toEqual(
+      [
+        "application_form_detected",
+        "blocked_reason",
+        "confidence",
+        "execution_allowed",
+        "form_signals_detected",
+        "hostname",
+        "ok",
+        "questionnaire_page_detected",
+        "required_fields_signal_detected",
+        "requires_human_review",
+        "resume_upload_signal_detected",
+        "tenant_key",
+        "timestamp"
+      ].sort()
+    );
+    expect(JSON.stringify(result)).not.toMatch(/legal name|token=secret|input\[|<form|textarea|select/i);
+    expect(actions).toEqual([]);
+  });
+
+  it("returns safe unknown metadata for an unknown page", async () => {
+    const { launcher } = createQuestionnaireLauncher({
+      finalUrl: "https://acme.wd5.myworkdayjobs.com/External/home",
+      title: "Candidate home"
+    });
+
+    await expect(detectTrustedWorkdayQuestionnairePage("https://acme.wd5.myworkdayjobs.com/External/home", "acme", { launcher })).resolves.toEqual(
+      expect.objectContaining({
+        application_form_detected: false,
+        confidence: "unknown",
+        form_signals_detected: false,
+        ok: true,
+        questionnaire_page_detected: false,
+        required_fields_signal_detected: false,
+        resume_upload_signal_detected: false
+      })
+    );
+  });
+
+  it("blocks and never navigates when the expected tenant key is missing", async () => {
+    const { launcher, visited } = createQuestionnaireLauncher({ formCount: 1 });
+
+    await expect(detectTrustedWorkdayQuestionnairePage("https://acme.wd5.myworkdayjobs.com/External/application", null, { launcher })).resolves.toEqual(
+      expect.objectContaining({ blocked_reason: "expected_tenant_missing", ok: false })
+    );
+    expect(visited).toEqual([]);
+  });
+
+  it("blocks untrusted hostnames before browser launch", async () => {
+    await expect(detectTrustedWorkdayQuestionnairePage("https://workday.evil.com/application", "acme")).resolves.toEqual(
+      expect.objectContaining({ blocked_reason: "untrusted_host", ok: false })
+    );
+  });
+
+  it("blocks and never navigates on tenant mismatch before navigation", async () => {
+    const { launcher, visited } = createQuestionnaireLauncher({ formCount: 1 });
+
+    await expect(detectTrustedWorkdayQuestionnairePage("https://acme.wd5.myworkdayjobs.com/External/application", "beta", { launcher })).resolves.toEqual(
+      expect.objectContaining({ blocked_reason: "tenant_mismatch_before_open", ok: false })
+    );
+    expect(visited).toEqual([]);
+  });
+
+  it("blocks untrusted redirects after navigation", async () => {
+    const { closed, launcher } = createQuestionnaireLauncher({
+      finalUrl: "https://evil.com/phishing",
+      formCount: 1
+    });
+
+    await expect(detectTrustedWorkdayQuestionnairePage("https://acme.wd5.myworkdayjobs.com/External/application", "acme", { launcher })).resolves.toEqual(
+      expect.objectContaining({ blocked_reason: "untrusted_redirect", ok: false })
+    );
+    expect(closed).toEqual(["page", "context", "browser"]);
+  });
+
+  it("blocks tenant mismatch after navigation", async () => {
+    const { closed, launcher } = createQuestionnaireLauncher({
+      finalUrl: "https://beta.wd5.myworkdayjobs.com/External/application",
+      formCount: 1
+    });
+
+    await expect(detectTrustedWorkdayQuestionnairePage("https://acme.wd5.myworkdayjobs.com/External/application", "acme", { launcher })).resolves.toEqual(
+      expect.objectContaining({ blocked_reason: "tenant_mismatch_after_open", ok: false })
+    );
+    expect(closed).toEqual(["page", "context", "browser"]);
   });
 });
 

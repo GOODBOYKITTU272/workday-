@@ -6,6 +6,7 @@ import {
   buildZohoRefreshAccessTokenUpdate,
   decryptZohoMailboxSecrets,
   loadZohoMailboxSecrets,
+  isTrustedWorkdayVerificationHost,
   parseWorkdayVerificationEmail,
   searchZohoMessages
 } from "../src/zoho-mail";
@@ -161,6 +162,30 @@ describe("Zoho mail reader foundation", () => {
       kind: "found_verification_link",
       verificationLink: "https://wd5.myworkday.com/acme/verifyEmail?token=abc"
     });
+  });
+
+  it("accepts only trusted Workday verification link hostnames", () => {
+    expect(isTrustedWorkdayVerificationHost(new URL("https://workday.com/verify"))).toBe(true);
+    expect(isTrustedWorkdayVerificationHost(new URL("https://wd5.myworkdayjobs.com/acme/verifyEmail?token=abc"))).toBe(true);
+    expect(isTrustedWorkdayVerificationHost(new URL("https://phishing-site.com/workday/verify-account?id=123"))).toBe(false);
+    expect(isTrustedWorkdayVerificationHost(new URL("https://workday.evil.com/verify"))).toBe(false);
+    expect(isTrustedWorkdayVerificationHost(new URL("https://evil-workday.com/confirm"))).toBe(false);
+  });
+
+  it("rejects untrusted Workday-looking verification links", () => {
+    for (const link of [
+      "https://phishing-site.com/workday/verify-account?id=123",
+      "https://workday.evil.com/verify",
+      "https://evil-workday.com/confirm"
+    ]) {
+      expect(
+        parseWorkdayVerificationEmail({
+          body: `<a href="${link}">Verify your Workday email</a>`,
+          fromAddress: "notifications@example.com",
+          subject: "Verify your Workday email"
+        })
+      ).toEqual({ kind: "no_match", reason: "no_workday_token" });
+    }
   });
 
   it("returns no_match for unrelated messages and ambiguous multi-code messages", () => {

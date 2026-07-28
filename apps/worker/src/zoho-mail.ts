@@ -186,7 +186,7 @@ export async function searchZohoMessages({
 export function parseWorkdayVerificationEmail(message: ZohoMailMessage): WorkdayEmailResult {
   const text = [message.fromAddress, message.subject, message.body].join(" ");
   const lowerText = text.toLowerCase();
-  const workdayLinks = extractLinks(message.body).filter((link) => link.toLowerCase().includes("workday"));
+  const workdayLinks = extractLinks(message.body).filter(isTrustedWorkdayVerificationLink);
   const hasWorkdaySignal = lowerText.includes("workday") || lowerText.includes("myworkday") || workdayLinks.length > 0;
 
   if (!hasWorkdaySignal) {
@@ -214,10 +214,33 @@ export function parseWorkdayVerificationEmail(message: ZohoMailMessage): Workday
   return { kind: "no_match", reason: "no_workday_token" };
 }
 
+export function isTrustedWorkdayVerificationHost(url: URL) {
+  const hostname = url.hostname.toLowerCase();
+
+  return (
+    hostname === "workday.com" ||
+    hostname.endsWith(".workday.com") ||
+    hostname === "myworkday.com" ||
+    hostname.endsWith(".myworkday.com") ||
+    hostname === "myworkdayjobs.com" ||
+    hostname.endsWith(".myworkdayjobs.com")
+  );
+}
+
 function stringField(value: unknown) {
   return typeof value === "string" ? value : "";
 }
 
 function extractLinks(input: string) {
   return Array.from(input.matchAll(/https?:\/\/[^\s"'<>]+/g), ([link]) => link.replace(/[),.]+$/, "").replace(/&amp;/g, "&"));
+}
+
+function isTrustedWorkdayVerificationLink(link: string) {
+  try {
+    const url = new URL(link);
+
+    return isTrustedWorkdayVerificationHost(url);
+  } catch {
+    return false;
+  }
 }

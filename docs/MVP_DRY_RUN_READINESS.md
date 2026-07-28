@@ -68,8 +68,11 @@ The ApplyWizz Leads API values are worker-only secrets. Never put them in `EXPO_
 Manual candidate sync:
 
 ```bash
+corepack pnpm --filter @applywizz/worker sync:applywizz-leads:check
 corepack pnpm --filter @applywizz/worker sync:applywizz-leads
 ```
+
+The check command validates required env vars, the ApplyWizz API HTTP status, and the Supabase service-role JWT role/ref without writing candidate rows.
 
 ## Supabase Migrations
 

@@ -7,6 +7,16 @@ type ApplyWizzLeadsResponse = {
   results?: unknown;
 };
 
+export class ApplyWizzLeadsHttpError extends Error {
+  readonly code = "APPLYWIZZ_LEADS_FETCH_FAILED";
+  readonly httpStatus: number;
+
+  constructor(httpStatus: number) {
+    super("APPLYWIZZ_LEADS_FETCH_FAILED");
+    this.httpStatus = httpStatus;
+  }
+}
+
 export async function fetchApplyWizzLeads(env: ApplyWizzLeadsEnv, fetchImpl: FetchLike = fetch): Promise<ApplyWizzLead[]> {
   const response = await fetchImpl(env.apiUrl, {
     headers: {
@@ -16,7 +26,7 @@ export async function fetchApplyWizzLeads(env: ApplyWizzLeadsEnv, fetchImpl: Fet
   });
 
   if (!response.ok) {
-    throw new Error("APPLYWIZZ_LEADS_FETCH_FAILED");
+    throw new ApplyWizzLeadsHttpError(response.status);
   }
 
   const body = (await response.json()) as ApplyWizzLeadsResponse;

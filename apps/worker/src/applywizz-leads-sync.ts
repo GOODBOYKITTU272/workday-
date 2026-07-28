@@ -67,6 +67,16 @@ export type ApplyWizzLeadsSyncInput = {
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+export class ApplyWizzSupabaseSyncError extends Error {
+  readonly code = "SUPABASE_CANDIDATE_SYNC_FAILED";
+  readonly supabaseCode?: string;
+
+  constructor(supabaseCode?: string) {
+    super("SUPABASE_CANDIDATE_SYNC_FAILED");
+    this.supabaseCode = supabaseCode;
+  }
+}
+
 export function mapApplyWizzLeadToCandidate(lead: ApplyWizzLead, syncedAt: string): ApplyWizzLeadMappingResult {
   const externalLeadId = safeString(lead.id);
   const email = safeString(lead.email).toLowerCase();
@@ -168,7 +178,7 @@ export function createSupabaseApplyWizzCandidateStore(client: SupabaseClient): A
         .eq("external_lead_id", externalLeadId);
 
       if (error) {
-        throw new Error("APPLYWIZZ_LEADS_CANDIDATE_LOOKUP_FAILED");
+        throw new ApplyWizzSupabaseSyncError(safeSupabaseCode(error.code));
       }
 
       return ((data ?? []) as Array<{ id: string }>).map(({ id }) => ({ id }));
@@ -177,7 +187,7 @@ export function createSupabaseApplyWizzCandidateStore(client: SupabaseClient): A
       const { data, error } = await client.from("candidates").select("id").eq("email", email).is("external_lead_id", null);
 
       if (error) {
-        throw new Error("APPLYWIZZ_LEADS_CANDIDATE_LOOKUP_FAILED");
+        throw new ApplyWizzSupabaseSyncError(safeSupabaseCode(error.code));
       }
 
       return ((data ?? []) as Array<{ id: string }>).map(({ id }) => ({ id }));
@@ -186,14 +196,14 @@ export function createSupabaseApplyWizzCandidateStore(client: SupabaseClient): A
       const { error } = await client.from("candidates").update(payload).eq("id", id);
 
       if (error) {
-        throw new Error("APPLYWIZZ_LEADS_CANDIDATE_UPDATE_FAILED");
+        throw new ApplyWizzSupabaseSyncError(safeSupabaseCode(error.code));
       }
     },
     upsertByExternalLead: async (payload) => {
       const { error } = await client.from("candidates").upsert(payload, { onConflict: "external_source,external_lead_id" });
 
       if (error) {
-        throw new Error("APPLYWIZZ_LEADS_CANDIDATE_UPSERT_FAILED");
+        throw new ApplyWizzSupabaseSyncError(safeSupabaseCode(error.code));
       }
     }
   };
@@ -217,4 +227,10 @@ function safeDate(value: unknown) {
   const text = safeString(value);
 
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
+}
+
+function safeSupabaseCode(value: unknown) {
+  const code = safeString(value);
+
+  return /^[A-Za-z0-9_]+$/.test(code) ? code : undefined;
 }

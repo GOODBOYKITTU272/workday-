@@ -1,0 +1,172 @@
+import { describe, expect, it } from "vitest";
+
+import { runApplyWizzLeadsSyncCli } from "../src/sync-applywizz-leads";
+
+const safeEnv = {
+  APPLYWIZZ_LEADS_API_URL: "https://dashboard.example.test/api/v1/leads/",
+  APPLYWIZZ_LEADS_BASIC_AUTH: "base64-secret-value",
+  SUPABASE_SERVICE_ROLE_KEY: makeJwt({ ref: "test-ref", role: "service_role" }),
+  SUPABASE_URL: "https://test-ref.supabase.co"
+};
+
+describe("ApplyWizz leads sync CLI diagnostics", () => {
+  it("prints missing SUPABASE_SERVICE_ROLE_KEY without secrets", async () => {
+    const output = createOutput();
+    const code = await runApplyWizzLeadsSyncCli({
+      createClient: createSupabaseClient(),
+      env: { ...safeEnv, SUPABASE_SERVICE_ROLE_KEY: "" },
+      fetchImpl: createFetch(200, { results: [] }),
+      stderr: output.stderr,
+      stdout: output.stdout
+    });
+
+    expect(code).toBe(1);
+    expect(output.err()).toContain("SUPABASE_SERVICE_ROLE_KEY");
+    expect(output.err()).not.toContain("base64-secret-value");
+  });
+
+  it("prints missing APPLYWIZZ_LEADS_BASIC_AUTH without secrets", async () => {
+    const output = createOutput();
+    const code = await runApplyWizzLeadsSyncCli({
+      createClient: createSupabaseClient(),
+      env: { ...safeEnv, APPLYWIZZ_LEADS_BASIC_AUTH: "" },
+      fetchImpl: createFetch(200, { results: [] }),
+      stderr: output.stderr,
+      stdout: output.stdout
+    });
+
+    expect(code).toBe(1);
+    expect(output.err()).toContain("APPLYWIZZ_LEADS_BASIC_AUTH");
+    expect(output.err()).not.toContain("base64-secret-value");
+  });
+
+  it("prints ApplyWizz API HTTP status without upstream payload", async () => {
+    const output = createOutput();
+    const code = await runApplyWizzLeadsSyncCli({
+      createClient: createSupabaseClient(),
+      env: safeEnv,
+      fetchImpl: createFetch(401, { detail: "upstream-payload-sentinel" }),
+      stderr: output.stderr,
+      stdout: output.stdout
+    });
+
+    expect(code).toBe(1);
+    expect(output.err()).toContain("APPLYWIZZ_LEADS_FETCH_FAILED");
+    expect(output.err()).toContain("\"http_status\":401");
+    expect(output.err()).not.toContain("upstream-payload-sentinel");
+    expect(output.err()).not.toContain("base64-secret-value");
+  });
+
+  it("prints safe Supabase sync code without raw database error text", async () => {
+    const output = createOutput();
+    const code = await runApplyWizzLeadsSyncCli({
+      createClient: createSupabaseClient({ code: "23505", message: "candidate@example.com duplicate" }),
+      env: safeEnv,
+      fetchImpl: createFetch(200, {
+        results: [
+          {
+            email: "candidate@example.com",
+            id: 1745,
+            name: "Candidate",
+            status: "In Progress"
+          }
+        ]
+      }),
+      stderr: output.stderr,
+      stdout: output.stdout
+    });
+
+    expect(code).toBe(1);
+    expect(output.err()).toContain("SUPABASE_CANDIDATE_SYNC_FAILED");
+    expect(output.err()).toContain("\"supabase_code\":\"23505\"");
+    expect(output.err()).not.toContain("candidate@example.com");
+    expect(output.err()).not.toContain("base64-secret-value");
+  });
+
+  it("check mode reports API status and Supabase key role/ref without writing data", async () => {
+    const output = createOutput();
+    const supabase = createSupabaseClient();
+    const code = await runApplyWizzLeadsSyncCli({
+      args: ["--check"],
+      createClient: supabase,
+      env: safeEnv,
+      fetchImpl: createFetch(200, { results: [] }),
+      stderr: output.stderr,
+      stdout: output.stdout
+    });
+
+    expect(code).toBe(0);
+    expect(output.out()).toContain("\"applywizz_api_http_status\":200");
+    expect(output.out()).toContain("\"supabase_key_role\":\"service_role\"");
+    expect(output.out()).toContain("\"supabase_key_ref\":\"test-ref\"");
+    expect(supabase.writes).toBe(0);
+  });
+});
+
+function createOutput() {
+  const stdoutLines: string[] = [];
+  const stderrLines: string[] = [];
+
+  return {
+    err: () => stderrLines.join("\n"),
+    out: () => stdoutLines.join("\n"),
+    stderr: (line: string) => {
+      stderrLines.push(line);
+    },
+    stdout: (line: string) => {
+      stdoutLines.push(line);
+    }
+  };
+}
+
+function createFetch(status: number, body: unknown) {
+  return async () =>
+    ({
+      json: async () => body,
+      ok: status >= 200 && status < 300,
+      status
+    }) as Response;
+}
+
+function createSupabaseClient(error?: { code?: string; message?: string }) {
+  const state = { writes: 0 };
+  const createClient = () =>
+    ({
+      from: () => ({
+        select: () => {
+          const builder = {
+            eq: () => builder,
+            is: () => builder,
+            then: <TResult1 = { data: []; error: null }, TResult2 = never>(
+              resolve?: (value: { data: []; error: null }) => TResult1 | PromiseLike<TResult1>,
+              reject?: (reason: unknown) => TResult2 | PromiseLike<TResult2>
+            ) => Promise.resolve({ data: [], error: null }).then(resolve, reject)
+          };
+
+          return builder;
+        },
+        update: () => ({
+          eq: () => {
+            state.writes += 1;
+
+            return Promise.resolve({ error });
+          }
+        }),
+        upsert: () => {
+          state.writes += 1;
+
+          return Promise.resolve({ error });
+        }
+      })
+    }) as never;
+
+  return Object.assign(createClient, state);
+}
+
+function makeJwt(payload: Record<string, unknown>) {
+  return [
+    Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url"),
+    Buffer.from(JSON.stringify(payload)).toString("base64url"),
+    "signature"
+  ].join(".");
+}

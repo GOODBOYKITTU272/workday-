@@ -54,6 +54,7 @@ Worker:
 - `ZOHO_REDIRECT_URI`
 - `APPLYWIZZ_LEADS_API_URL`
 - `APPLYWIZZ_LEADS_BASIC_AUTH`
+- `APPLYWIZZ_CLIENT_DETAILS_API_URL`
 
 Mobile web:
 
@@ -64,15 +65,18 @@ Mobile web:
 The privileged Supabase key and encrypted Workday credential fields belong only on the worker/server side. They must not be exposed to the mobile web app.
 The ApplyWizz Leads API values are worker-only secrets. Never put them in `EXPO_PUBLIC` variables, frontend code, or browser-visible Vercel public environment variables.
 `APPLYWIZZ_LEADS_API_URL` must include `status=In%20Progress&services_opted=applications&services_opted_logic=and`. The worker also defensively enforces `lead.status == "In Progress"` after trimming and case normalization, so Paused or Completed clients are not imported if the URL is changed later.
+`APPLYWIZZ_CLIENT_DETAILS_API_URL` is also worker-only. The client-details sync reuses `APPLYWIZZ_LEADS_BASIC_AUTH` when that credential is valid for the endpoint.
 
 Manual candidate sync:
 
 ```bash
 corepack pnpm --filter @applywizz/worker sync:applywizz-leads:check
 corepack pnpm --filter @applywizz/worker sync:applywizz-leads
+corepack pnpm --filter @applywizz/worker sync:applywizz-client-details -- --applywizz-id AWL-30453
 ```
 
 The check command validates required env vars, the ApplyWizz API HTTP status, and the Supabase service-role JWT role/ref without writing candidate rows.
+The client-details command enriches one existing candidate only. Sensitive EEO, background, demographic, address, phone, and internal ApplyWizz operations fields are intentionally not stored. Resume data is saved only as `candidates.external_resume_url` plus `external_resume_source`; it is not downloaded into Supabase Storage yet.
 
 ## Supabase Migrations
 
@@ -88,6 +92,7 @@ Apply migrations in filename order:
 8. `20260728000700_add_questionnaire_discovery_manual_review_metadata.sql`
 9. `20260728000800_add_questionnaire_safe_snapshot_manual_review_metadata.sql`
 10. `20260728000900_add_applywizz_leads_candidate_sync_fields.sql`
+11. `20260729000100_add_applywizz_client_details_enrichment_fields.sql`
 
 The `supabase/migrations` and `packages/database/migrations` copies must stay mirrored.
 

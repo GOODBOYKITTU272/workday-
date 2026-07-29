@@ -65,6 +65,7 @@ const nestedClientDetails: ApplyWizzClientDetails = {
   },
   client: {
     applywizz_id: "AWL-30453",
+    id: 1745,
     personal_email: "Candidate@Example.com",
     salary_range: "120k-140k",
     sponsorship: "No sponsorship required"
@@ -136,6 +137,7 @@ describe("ApplyWizz client details sync", () => {
       applywizz_id: "AWL-30453",
       attached_by_email: 0,
       matched_by_id: 1,
+      matched_by_external_lead_id: 0,
       skipped_ambiguous: 0,
       skipped_invalid: 0,
       skipped_no_match: 0,
@@ -145,6 +147,28 @@ describe("ApplyWizz client details sync", () => {
       {
         id: "existing-id",
         payload: expect.objectContaining({ applywizz_client_id: "AWL-30453", target_role: "Data Analyst" })
+      }
+    ]);
+  });
+
+  it("updates an existing candidate matched by ApplyWizz leads external lead id", async () => {
+    const store = createStore([{ applywizz_client_id: null, email: "other@example.com", external_lead_id: "1745", external_source: "applywizz_leads_api", id: "external-id" }]);
+    const result = await syncApplyWizzClientDetails({ applywizzId: "AWL-30453", fetchDetails: async () => nestedClientDetails, store });
+
+    expect(result).toEqual({
+      applywizz_id: "AWL-30453",
+      attached_by_email: 0,
+      matched_by_external_lead_id: 1,
+      matched_by_id: 0,
+      skipped_ambiguous: 0,
+      skipped_invalid: 0,
+      skipped_no_match: 0,
+      updated: 1
+    });
+    expect(store.updates).toEqual([
+      {
+        id: "external-id",
+        payload: expect.objectContaining({ applywizz_client_id: "AWL-30453" })
       }
     ]);
   });
@@ -243,6 +267,8 @@ describe("ApplyWizz client details sync", () => {
 type FakeCandidateRow = {
   applywizz_client_id: string | null;
   email: string;
+  external_lead_id?: string | null;
+  external_source?: string | null;
   id: string;
 };
 
@@ -250,6 +276,8 @@ function createStore(initialRows: FakeCandidateRow[] = []) {
   const updates: Array<{ id: string; payload: unknown }> = [];
   const store: ApplyWizzClientDetailsCandidateStore & { updates: Array<{ id: string; payload: unknown }> } = {
     findByApplyWizzClientId: async (applywizzClientId) => initialRows.filter((row) => row.applywizz_client_id === applywizzClientId).map(({ id }) => ({ id })),
+    findByExternalLeadId: async (externalLeadId) =>
+      initialRows.filter((row) => row.external_source === "applywizz_leads_api" && row.external_lead_id === externalLeadId).map(({ id }) => ({ id })),
     findUnlinkedByEmail: async (email) => initialRows.filter((row) => row.email === email && !row.applywizz_client_id).map(({ id }) => ({ id })),
     updateById: async (id, payload) => {
       updates.push({ id, payload });
@@ -284,7 +312,7 @@ function createSupabaseMock() {
             reject?: (reason: unknown) => TResult2 | PromiseLike<TResult2>
           ) => {
             calls.push({ filters, operation: "select" });
-            const data = filters.applywizz_client_id === "AWL-30453" ? [{ id: "existing-id" }] : [];
+            const data = filters.applywizz_client_id === "AWL-30453" || filters.external_lead_id === "1745" ? [{ id: "existing-id" }] : [];
 
             return Promise.resolve({ data, error: null }).then(resolve, reject);
           }

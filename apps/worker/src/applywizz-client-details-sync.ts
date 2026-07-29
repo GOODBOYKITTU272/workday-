@@ -5,6 +5,7 @@ export type ApplyWizzClientDetails = {
   applywizz_id?: unknown;
   client?: unknown;
   experience?: unknown;
+  id?: unknown;
   linked_in_url?: unknown;
   personal_email?: unknown;
   resume_url?: unknown;
@@ -38,6 +39,7 @@ export type ApplyWizzClientDetailsMappingResult = { ok: true; payload: ApplyWizz
 export type ApplyWizzClientDetailsSyncSummary = {
   applywizz_id: string;
   attached_by_email: number;
+  matched_by_external_lead_id: number;
   matched_by_id: number;
   skipped_ambiguous: number;
   skipped_invalid: number;
@@ -48,6 +50,7 @@ export type ApplyWizzClientDetailsSyncSummary = {
 
 export type ApplyWizzClientDetailsCandidateStore = {
   findByApplyWizzClientId: (applywizzClientId: string) => Promise<Array<{ id: string }>>;
+  findByExternalLeadId: (externalLeadId: string) => Promise<Array<{ id: string }>>;
   findUnlinkedByEmail: (email: string) => Promise<Array<{ id: string }>>;
   updateById: (id: string, payload: ApplyWizzClientDetailsCandidatePayload) => Promise<void>;
 };
@@ -143,6 +146,18 @@ export async function syncApplyWizzClientDetails({ applywizzId, fetchDetails, st
     return summary;
   }
 
+  if (normalized.externalLeadId) {
+    const externalLeadMatches = await store.findByExternalLeadId(normalized.externalLeadId);
+
+    if (externalLeadMatches.length > 0) {
+      await store.updateById(externalLeadMatches[0]!.id, mapped.payload);
+      summary.matched_by_external_lead_id = 1;
+      summary.updated = 1;
+
+      return summary;
+    }
+  }
+
   const emailMatches = await store.findUnlinkedByEmail(normalized.personalEmail);
 
   if (emailMatches.length > 1) {
@@ -174,6 +189,15 @@ export function createSupabaseApplyWizzClientDetailsCandidateStore(client: Supab
 
       return ((data ?? []) as Array<{ id: string }>).map(({ id }) => ({ id }));
     },
+    findByExternalLeadId: async (externalLeadId) => {
+      const { data, error } = await client.from("candidates").select("id").eq("external_source", "applywizz_leads_api").eq("external_lead_id", externalLeadId);
+
+      if (error) {
+        throw new ApplyWizzClientDetailsSyncError(safeSupabaseCode(error.code));
+      }
+
+      return ((data ?? []) as Array<{ id: string }>).map(({ id }) => ({ id }));
+    },
     findUnlinkedByEmail: async (email) => {
       const { data, error } = await client.from("candidates").select("id").eq("email", email).is("applywizz_client_id", null);
 
@@ -197,6 +221,7 @@ function createSummary(applywizzId: string): ApplyWizzClientDetailsSyncSummary {
   return {
     applywizz_id: applywizzId,
     attached_by_email: 0,
+    matched_by_external_lead_id: 0,
     matched_by_id: 0,
     skipped_ambiguous: 0,
     skipped_invalid: 0,
@@ -210,6 +235,7 @@ function normalizeApplyWizzClientDetails(details: ApplyWizzClientDetails):
       ok: true;
       applywizzId: string;
       experience: unknown;
+      externalLeadId: string;
       linkedInUrl: unknown;
       personalEmail: string;
       resumeUrl: unknown;
@@ -256,6 +282,7 @@ function normalizeApplyWizzClientDetails(details: ApplyWizzClientDetails):
   return {
     applywizzId,
     experience: additionalInformation.experience,
+    externalLeadId: safeString(client.id),
     linkedInUrl: additionalInformation.linked_in_url,
     ok: true,
     personalEmail,

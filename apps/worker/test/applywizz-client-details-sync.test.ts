@@ -53,6 +53,24 @@ const clientDetails: ApplyWizzClientDetails = {
   work_auth_details: "US citizen"
 };
 
+const nestedClientDetails: ApplyWizzClientDetails = {
+  additional_information: {
+    experience: 5,
+    linked_in_url: "https://linkedin.example.test/in/candidate",
+    resume_url: "https://files.example.test/resume.pdf",
+    role: "Data Analyst",
+    state_of_residence: "Texas",
+    willing_to_relocate: "yes",
+    work_auth_details: "US citizen"
+  },
+  client: {
+    applywizz_id: "AWL-30453",
+    personal_email: "Candidate@Example.com",
+    salary_range: "120k-140k",
+    sponsorship: "No sponsorship required"
+  }
+};
+
 describe("ApplyWizz client details sync", () => {
   it("maps only allow-listed enrichment fields", () => {
     expect(mapApplyWizzClientDetailsToCandidate(clientDetails, "AWL-30453")).toEqual({
@@ -91,6 +109,25 @@ describe("ApplyWizz client details sync", () => {
     expect(JSON.stringify(mapped)).not.toContain("candidate_resumes");
   });
 
+  it("maps nested client and additional information response shape", () => {
+    expect(mapApplyWizzClientDetailsToCandidate(nestedClientDetails, "AWL-30453")).toEqual({
+      ok: true,
+      payload: {
+        applywizz_client_id: "AWL-30453",
+        expected_salary: "120k-140k",
+        external_resume_source: "applywizz_client_details",
+        external_resume_url: "https://files.example.test/resume.pdf",
+        linkedin_url: "https://linkedin.example.test/in/candidate",
+        location: "Texas",
+        relocation_preference: "yes",
+        sponsorship_requirement: "No sponsorship required",
+        target_role: "Data Analyst",
+        work_authorization: "US citizen",
+        years_experience: 5
+      }
+    });
+  });
+
   it("updates an existing candidate matched by applywizz_client_id", async () => {
     const store = createStore([{ applywizz_client_id: "AWL-30453", email: "candidate@example.com", id: "existing-id" }]);
     const result = await syncApplyWizzClientDetails({ applywizzId: "AWL-30453", fetchDetails: async () => clientDetails, store });
@@ -114,7 +151,7 @@ describe("ApplyWizz client details sync", () => {
 
   it("attaches applywizz id to a single personal email match", async () => {
     const store = createStore([{ applywizz_client_id: null, email: "candidate@example.com", id: "legacy-id" }]);
-    const result = await syncApplyWizzClientDetails({ applywizzId: "AWL-30453", fetchDetails: async () => clientDetails, store });
+    const result = await syncApplyWizzClientDetails({ applywizzId: "AWL-30453", fetchDetails: async () => nestedClientDetails, store });
 
     expect(result.attached_by_email).toBe(1);
     expect(result.updated).toBe(0);
@@ -158,7 +195,22 @@ describe("ApplyWizz client details sync", () => {
     const result = await syncApplyWizzClientDetails({ applywizzId: "AWL-30453", fetchDetails: async () => ({ ...clientDetails, personal_email: "bad-email" }), store });
 
     expect(result.skipped_invalid).toBe(1);
+    expect(result.skipped_invalid_reason).toBe("invalid_personal_email");
     expect(store.updates).toEqual([]);
+  });
+
+  it.each([
+    [{}, "missing_client"],
+    [{ client: { personal_email: "candidate@example.com" } }, "missing_applywizz_id"],
+    [{ client: { applywizz_id: "bad-id", personal_email: "candidate@example.com" } }, "invalid_applywizz_id"],
+    [{ client: { applywizz_id: "AWL-30453" } }, "missing_personal_email"],
+    [{ client: { applywizz_id: "AWL-30453", personal_email: "bad-email" } }, "invalid_personal_email"]
+  ])("returns safe invalid reason %s", async (details, reason) => {
+    const result = await syncApplyWizzClientDetails({ applywizzId: "AWL-30453", fetchDetails: async () => details as ApplyWizzClientDetails, store: createStore() });
+
+    expect(result.skipped_invalid).toBe(1);
+    expect(result.skipped_invalid_reason).toBe(reason);
+    expect(JSON.stringify(result)).not.toMatch(/candidate@example.com|bad-email/i);
   });
 
   it("uses Supabase update for id matches", async () => {

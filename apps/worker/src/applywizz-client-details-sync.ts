@@ -1,7 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 export type ApplyWizzClientDetails = {
+  additional_information?: unknown;
   applywizz_id?: unknown;
+  client?: unknown;
   experience?: unknown;
   linked_in_url?: unknown;
   personal_email?: unknown;
@@ -29,7 +31,9 @@ export type ApplyWizzClientDetailsCandidatePayload = {
   years_experience: number | null;
 };
 
-export type ApplyWizzClientDetailsMappingResult = { ok: true; payload: ApplyWizzClientDetailsCandidatePayload } | { ok: false; reason: "invalid_applywizz_id" };
+export type ApplyWizzClientDetailsInvalidReason = "missing_client" | "missing_applywizz_id" | "invalid_applywizz_id" | "missing_personal_email" | "invalid_personal_email";
+
+export type ApplyWizzClientDetailsMappingResult = { ok: true; payload: ApplyWizzClientDetailsCandidatePayload } | { ok: false; reason: ApplyWizzClientDetailsInvalidReason };
 
 export type ApplyWizzClientDetailsSyncSummary = {
   applywizz_id: string;
@@ -37,6 +41,7 @@ export type ApplyWizzClientDetailsSyncSummary = {
   matched_by_id: number;
   skipped_ambiguous: number;
   skipped_invalid: number;
+  skipped_invalid_reason?: ApplyWizzClientDetailsInvalidReason;
   skipped_no_match: number;
   updated: number;
 };
@@ -72,22 +77,28 @@ export function mapApplyWizzClientDetailsToCandidate(details: ApplyWizzClientDet
     return { ok: false, reason: "invalid_applywizz_id" };
   }
 
-  const externalResumeUrl = safeUrl(details.resume_url);
+  const normalized = normalizeApplyWizzClientDetails(details);
+
+  if (!normalized.ok) {
+    return normalized;
+  }
+
+  const externalResumeUrl = safeUrl(normalized.resumeUrl);
 
   return {
     ok: true,
     payload: {
-      applywizz_client_id: safeApplyWizzId,
-      expected_salary: safeString(details.salary_range) || null,
+      applywizz_client_id: normalized.applywizzId,
+      expected_salary: safeString(normalized.salaryRange) || null,
       external_resume_source: externalResumeUrl ? "applywizz_client_details" : null,
       external_resume_url: externalResumeUrl,
-      linkedin_url: safeUrl(details.linked_in_url),
-      location: safeString(details.state_of_residence) || null,
-      relocation_preference: safeString(details.willing_to_relocate) || null,
-      sponsorship_requirement: safeString(details.sponsorship) || null,
-      target_role: safeString(details.role) || null,
-      work_authorization: safeString(details.work_auth_details) || null,
-      years_experience: safeNumber(details.experience)
+      linkedin_url: safeUrl(normalized.linkedInUrl),
+      location: safeString(normalized.stateOfResidence) || null,
+      relocation_preference: safeString(normalized.willingToRelocate) || null,
+      sponsorship_requirement: safeString(normalized.sponsorship) || null,
+      target_role: safeString(normalized.role) || null,
+      work_authorization: safeString(normalized.workAuthDetails) || null,
+      years_experience: safeNumber(normalized.experience)
     }
   };
 }
@@ -98,20 +109,31 @@ export async function syncApplyWizzClientDetails({ applywizzId, fetchDetails, st
 
   if (!safeApplyWizzId) {
     summary.skipped_invalid = 1;
+    summary.skipped_invalid_reason = "invalid_applywizz_id";
 
     return summary;
   }
 
   const details = await fetchDetails(safeApplyWizzId);
-  const mapped = mapApplyWizzClientDetailsToCandidate(details, safeApplyWizzId);
+  const normalized = normalizeApplyWizzClientDetails(details);
 
-  if (!mapped.ok) {
+  if (!normalized.ok) {
     summary.skipped_invalid = 1;
+    summary.skipped_invalid_reason = normalized.reason;
 
     return summary;
   }
 
-  const idMatches = await store.findByApplyWizzClientId(safeApplyWizzId);
+  const mapped = mapApplyWizzClientDetailsToCandidate(details, safeApplyWizzId);
+
+  if (!mapped.ok) {
+    summary.skipped_invalid = 1;
+    summary.skipped_invalid_reason = mapped.reason;
+
+    return summary;
+  }
+
+  const idMatches = await store.findByApplyWizzClientId(normalized.applywizzId);
 
   if (idMatches.length > 0) {
     await store.updateById(idMatches[0]!.id, mapped.payload);
@@ -121,15 +143,7 @@ export async function syncApplyWizzClientDetails({ applywizzId, fetchDetails, st
     return summary;
   }
 
-  const personalEmail = safeString(details.personal_email).toLowerCase();
-
-  if (!personalEmail || !emailPattern.test(personalEmail)) {
-    summary.skipped_invalid = 1;
-
-    return summary;
-  }
-
-  const emailMatches = await store.findUnlinkedByEmail(personalEmail);
+  const emailMatches = await store.findUnlinkedByEmail(normalized.personalEmail);
 
   if (emailMatches.length > 1) {
     summary.skipped_ambiguous = 1;
@@ -189,6 +203,74 @@ function createSummary(applywizzId: string): ApplyWizzClientDetailsSyncSummary {
     skipped_no_match: 0,
     updated: 0
   };
+}
+
+function normalizeApplyWizzClientDetails(details: ApplyWizzClientDetails):
+  | {
+      ok: true;
+      applywizzId: string;
+      experience: unknown;
+      linkedInUrl: unknown;
+      personalEmail: string;
+      resumeUrl: unknown;
+      role: unknown;
+      salaryRange: unknown;
+      sponsorship: unknown;
+      stateOfResidence: unknown;
+      willingToRelocate: unknown;
+      workAuthDetails: unknown;
+    }
+  | { ok: false; reason: ApplyWizzClientDetailsInvalidReason } {
+  const root = asRecord(details) ?? {};
+  const nestedClient = asRecord(root.client);
+  const client = nestedClient ?? (safeString(root.applywizz_id) || safeString(root.personal_email) ? root : null);
+
+  if (!client) {
+    return { ok: false, reason: "missing_client" };
+  }
+
+  const rawApplyWizzId = safeString(client.applywizz_id);
+
+  if (!rawApplyWizzId) {
+    return { ok: false, reason: "missing_applywizz_id" };
+  }
+
+  const applywizzId = safeApplyWizzClientId(rawApplyWizzId);
+
+  if (!applywizzId) {
+    return { ok: false, reason: "invalid_applywizz_id" };
+  }
+
+  const personalEmail = safeString(client.personal_email).toLowerCase();
+
+  if (!personalEmail) {
+    return { ok: false, reason: "missing_personal_email" };
+  }
+
+  if (!emailPattern.test(personalEmail)) {
+    return { ok: false, reason: "invalid_personal_email" };
+  }
+
+  const additionalInformation = asRecord(root.additional_information) ?? root;
+
+  return {
+    applywizzId,
+    experience: additionalInformation.experience,
+    linkedInUrl: additionalInformation.linked_in_url,
+    ok: true,
+    personalEmail,
+    resumeUrl: additionalInformation.resume_url,
+    role: additionalInformation.role,
+    salaryRange: client.salary_range,
+    sponsorship: client.sponsorship,
+    stateOfResidence: additionalInformation.state_of_residence,
+    willingToRelocate: additionalInformation.willing_to_relocate,
+    workAuthDetails: additionalInformation.work_auth_details ?? client.work_auth_details
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
 function safeApplyWizzClientId(value: unknown) {
